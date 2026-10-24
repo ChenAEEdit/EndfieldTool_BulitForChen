@@ -58,6 +58,7 @@ public static class SceneBuilder
     {
         public string model, clip, scene, unityVersion;
         public bool avatarValid, avatarHuman, humanoidClip, passed;
+        public bool savedPoseMatchesModel;
         public int transformCount, meshCount, vertexCount, bindings, remappedCurves, missingCurves;
         public int repairedNonFiniteTangents;
         public int removedScenePositionCurves;
@@ -205,6 +206,11 @@ public static class SceneBuilder
             root.name = "Chen_Qianyu";
             root.transform.position = Vector3.zero;
             var transforms = root.GetComponentsInChildren<Transform>(true);
+            // Keep the imported rest pose separate from sampled preview animation.
+            var restPositions = transforms.Select(t => t.localPosition).ToArray();
+            var restRotations = transforms.Select(t => t.localRotation).ToArray();
+            var restScales = transforms.Select(t => t.localScale).ToArray();
+            var restPaths = transforms.Select(t => AnimationUtility.CalculateTransformPath(t, root.transform)).ToArray();
             human.skeleton = transforms.Select(t => new SkeletonBone
             {
                 name = t.name, position = t.localPosition, rotation = t.localRotation, scale = t.localScale
@@ -348,12 +354,30 @@ public static class SceneBuilder
             }
             audit.samples = samples.ToArray();
             audit.passed = audit.missingCurves == 0 && samples.All(s => s.nonFiniteVertices == 0 && s.size.magnitude < restBounds.size.magnitude * 3 && s.edgeStretch99 < 3);
-            animator.Rebind();
-            animator.Play("Walk", 0, 0);
-            animator.Update(0);
+            // Sampling writes to real Transforms even outside Play mode. Restore
+            // the model pose before serializing the scene; runtime starts at frame 0.
+            animator.enabled = false;
+            for (int i = 0; i < transforms.Length; i++)
+            {
+                transforms[i].localPosition = restPositions[i];
+                transforms[i].localRotation = restRotations[i];
+                transforms[i].localScale = restScales[i];
+            }
+            animator.enabled = true;
             root.AddComponent<PlaybackControls>().clipLabel = uiWalk ? "UI female_walk / Generic / loop" : "Customized walk / Humanoid / loop";
+            Capture(camera, Path.Combine(report, "chen_saved_rest.png"));
             EditorSceneManager.SaveScene(scene, ScenePath);
             AssetDatabase.SaveAssets();
+            // Verify the serialized pose after reopening, not only in memory.
+            EditorSceneManager.OpenScene(ScenePath);
+            var reloaded = UnityEngine.Object.FindFirstObjectByType<PlaybackControls>().gameObject;
+            var reloadedPaths = reloaded.GetComponentsInChildren<Transform>(true)
+                .ToDictionary(t => AnimationUtility.CalculateTransformPath(t, reloaded.transform));
+            audit.savedPoseMatchesModel = Enumerable.Range(0, restPaths.Length).All(i =>
+                Vector3.Distance(reloadedPaths[restPaths[i]].localPosition, restPositions[i]) < .000001f &&
+                Quaternion.Angle(reloadedPaths[restPaths[i]].localRotation, restRotations[i]) < .01f &&
+                Vector3.Distance(reloadedPaths[restPaths[i]].localScale, restScales[i]) < .000001f);
+            audit.passed &= audit.savedPoseMatchesModel;
             File.WriteAllText(Path.Combine(report, "verification.json"), JsonUtility.ToJson(audit, true));
             Debug.Log("[CHEN_REEXTRACTED] " + JsonUtility.ToJson(audit));
             if (exit) EditorApplication.Exit(audit.passed ? 0 : 7);

@@ -1,4 +1,4 @@
-# 终末地陈千语工具 v0.1.0
+# 终末地陈千语工具 v0.1.1
 
 Windows 本地工具，将已验证的陈千语提取和 Unity 动画修复流程做成图形界面。
 
@@ -83,3 +83,7 @@ Unity 内容写入现有项目的 `Assets/EndfieldChenTool`。这是工具生成
 附加 `--check-only` 只检查环境，`--animations ui` 或 `--animations acl` 选择一条，`--force` 忽略导出缓存。省略 `--unity-project` 时只导出待导入文件。
 
 第三方来源与许可证见 `THIRD_PARTY.md` 和 `licenses`。工具包不包含游戏模型、贴图或动画，资源由用户选择的本机游戏目录生成。
+
+## v0.1.1 修正
+
+采样检查结束后恢复 FBX 的原始姿势，再保存场景；重新加载后逐个核对骨骼变换，避免未播放时就保存成动画姿势。按播放后仍由 Animator 正常驱动动画。

@@ -55,7 +55,7 @@ profile = {
 }
 (profiles / "chen.json").write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
 copy(REPO / "work/vfs_probe/endfield_vfs.py", ROOT / "scripts/endfield_vfs.py")
-builder = (EVIDENCE / "unity_stage/Editor/ChenReextractedBuilder.cs").read_text(encoding="utf-8-sig")
+builder = (ROOT / "sources/manual/ChenReextractedBuilder.cs").read_text(encoding="utf-8-sig")
 builder = builder.replace("ChenReextractedBuilder", "SceneBuilder").replace("ChenPlaybackControls", "PlaybackControls")
 builder = builder.replace("Assets/ChenReextracted", "Assets/EndfieldChenTool").replace("Chen Reextracted/Build and inspect scene", "Endfield Chen Tool/重建 ACL 预览")
 for old, new in (("ChenRuntimeCheck", "EndfieldChenTool.RuntimeCheck"), ("ChenRuntimeUiWalk", "EndfieldChenTool.RuntimeUiWalk"), ("ChenRuntimeReport", "EndfieldChenTool.RuntimeReport")):
@@ -69,7 +69,8 @@ reset = '''    static void UseAclWalk()
         ScenePath = Base + "/Chen_Reextracted.unity";
     }
 '''
-builder = builder.replace("    static void UseUiWalk()", reset + "    static void UseUiWalk()")
+if "    static void UseAclWalk()" not in builder:
+    builder = builder.replace("    static void UseUiWalk()", reset + "    static void UseUiWalk()")
 builder = builder.replace("public static void BuildInteractive() { Build(false); }", "public static void BuildInteractive() { UseAclWalk(); Build(false); }")
 builder = builder.replace("public static void BuildBatch() { Build(true); }", "public static void BuildBatch() { UseAclWalk(); Build(true); }")
 builder = builder.replace("        Directory.CreateDirectory(report);", "        Directory.CreateDirectory(report);\n        Directory.CreateDirectory(Base + \"/Materials\");")
