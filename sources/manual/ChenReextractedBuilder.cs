@@ -17,10 +17,12 @@ public static class ChenReextractedBuilder
     static string ControllerPath = Base + "/Chen.controller";
     static string ScenePath = Base + "/Chen_Reextracted.unity";
     static bool uiWalk;
+    static bool genericCharacterIdle;
     static HumanMapping[] humanMapping;
     static void UseAclWalk()
     {
         uiWalk = false;
+        genericCharacterIdle = false;
         SourcePath = Base + "/Animations/Chen_Walk_Source.anim";
         ClipPath = Base + "/Animations/Chen_Walk.anim";
         ControllerPath = Base + "/Chen.controller";
@@ -29,6 +31,7 @@ public static class ChenReextractedBuilder
     static void UseUiWalk()
     {
         uiWalk = true;
+        genericCharacterIdle = false;
         SourcePath = Base + "/Animations/Chen_UI_Walk_Source.anim";
         ClipPath = Base + "/Animations/Chen_UI_Walk.anim";
         ControllerPath = Base + "/Chen_UI.controller";
@@ -215,12 +218,12 @@ public static class ChenReextractedBuilder
             {
                 name = t.name, position = t.localPosition, rotation = t.localRotation, scale = t.localScale
             }).ToArray();
-            var avatar = uiWalk ? AssetDatabase.LoadAllAssetsAtPath(ModelPath).OfType<Avatar>().FirstOrDefault() : AvatarBuilder.BuildHumanAvatar(root, human);
+            var avatar = (uiWalk || genericCharacterIdle) ? AssetDatabase.LoadAllAssetsAtPath(ModelPath).OfType<Avatar>().FirstOrDefault() : AvatarBuilder.BuildHumanAvatar(root, human);
             avatar.name = "Chen_Reextracted_Avatar";
             audit.avatarValid = avatar && avatar.isValid;
             audit.avatarHuman = avatar && avatar.isHuman;
-            if (!audit.avatarValid || !uiWalk && !audit.avatarHuman) throw new Exception("Generated Avatar is invalid.");
-            if (!uiWalk)
+            if (!audit.avatarValid || !uiWalk && !genericCharacterIdle && !audit.avatarHuman) throw new Exception("Generated Avatar is invalid.");
+            if (!uiWalk && !genericCharacterIdle)
             {
                 var savedAvatar = AssetDatabase.LoadAssetAtPath<Avatar>(Base + "/ChenAvatar.asset");
                 if (savedAvatar) { EditorUtility.CopySerialized(avatar, savedAvatar); UnityEngine.Object.DestroyImmediate(avatar); avatar = savedAvatar; }
@@ -240,6 +243,9 @@ public static class ChenReextractedBuilder
             var targetCurves = new List<AnimationCurve>();
             foreach (var binding in sourceBindings)
             {
+                // Character UI idle clips contain complete Transform tracks and unused
+                // humanoid root/muscle channels. Play only the direct skeletal tracks.
+                if (genericCharacterIdle && binding.type == typeof(Animator)) continue;
                 if (uiWalk && binding.type == typeof(Transform) && String.IsNullOrEmpty(binding.path) && binding.propertyName.StartsWith("m_LocalPosition", StringComparison.Ordinal))
                 { audit.removedScenePositionCurves++; continue; }
                 var target = binding;

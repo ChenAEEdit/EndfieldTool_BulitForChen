@@ -110,7 +110,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "终末地角色工具 · 陈千语  |  v0.1.2";
+        Text = "终末地角色工具 · 陈千语  |  v0.1.3";
         Font = new Font("Microsoft YaHei UI", 9.5f);
         ForeColor = Ink;
         BackColor = Color.FromArgb(242, 245, 250);

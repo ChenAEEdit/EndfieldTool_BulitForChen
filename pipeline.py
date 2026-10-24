@@ -23,7 +23,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(ROOT / "scripts"))
 from endfield_vfs import chacha20, parse_blc_v4
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 ASSET_ROOT = "Assets/EndfieldChenTool"
 UNITY_TYPE = "EndfieldChenTool.Generated.SceneBuilder"
 log_file = None

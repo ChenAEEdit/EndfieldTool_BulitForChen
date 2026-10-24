@@ -133,7 +133,7 @@ subprocess.run(["dotnet", "build", str(ROOT / "EndfieldChenTool.csproj"), "-c", 
                 "--configfile", str(ROOT / "NuGet.Config"), "--verbosity", "minimal"], check=True, env=env)
 for file in ("pipeline.py", "README.md", "THIRD_PARTY.md"):
     copy(ROOT / file, PACKAGE / file)
-for folder in ("profiles", "templates", "scripts", "runtime", "licenses", "sources"):
+for folder in ("profiles", "templates", "scripts", "runtime", "licenses", "sources", "docs"):
     shutil.copytree(ROOT / folder, PACKAGE / folder, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 for file in ("Program.cs", "EndfieldChenTool.csproj", "NuGet.Config", "build_tool.py"):
