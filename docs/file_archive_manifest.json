@@ -1,0 +1,23 @@
+[
+  {
+    "source": "D:\\AAAChatGPT\\EndfieldChenTool-v0.1.0.zip",
+    "destination": "D:\\AAAChatGPT\\终末地项目资料\\02_历史版本\\v0.1.0\\EndfieldChenTool-v0.1.0.zip",
+    "bytes": 13117238,
+    "sha256": "f6c0e94e74c49b517559d5e5d6b33ca4f8caed5d8147dee2b9aed60c7855f781",
+    "archive_verified": true
+  },
+  {
+    "source": "D:\\AAAChatGPT\\EndfieldChenTool-v0.1.1.zip",
+    "destination": "D:\\AAAChatGPT\\终末地项目资料\\02_历史版本\\v0.1.1\\EndfieldChenTool-v0.1.1.zip",
+    "bytes": 13126690,
+    "sha256": "dccdc451fdf6b8811c183e1d13f5dd3f3acb0ae569d84ea77ecf4fb87ad49b36",
+    "archive_verified": true
+  },
+  {
+    "source": "D:\\AAAChatGPT\\EndfieldChenTool-v0.1.2.zip",
+    "destination": "D:\\AAAChatGPT\\终末地项目资料\\02_历史版本\\v0.1.2\\EndfieldChenTool-v0.1.2.zip",
+    "bytes": 13136483,
+    "sha256": "45b4cb2b2462b08e8af6de528e895b7327b57c796f64f24f950e09d5ccab21eb",
+    "archive_verified": true
+  }
+]
