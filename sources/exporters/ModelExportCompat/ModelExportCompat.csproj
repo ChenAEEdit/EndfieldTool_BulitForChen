@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup>
+    <Reference Include="AnimeStudio"><HintPath>F:\AAA_ZMD\endfield\recon\endfieldstudio\EndfieldStudio-main\AnimeStudio.CLI\bin\Release\net10.0\AnimeStudio.dll</HintPath></Reference>
+    <Reference Include="AnimeStudio.Utility"><HintPath>F:\AAA_ZMD\endfield\recon\endfieldstudio\EndfieldStudio-main\AnimeStudio.CLI\bin\Release\net10.0\AnimeStudio.Utility.dll</HintPath></Reference>
+    <Reference Include="AnimeStudio.FBXWrapper"><HintPath>F:\AAA_ZMD\endfield\recon\endfieldstudio\EndfieldStudio-main\AnimeStudio.CLI\bin\Release\net10.0\AnimeStudio.FBXWrapper.dll</HintPath></Reference>
+    <Reference Include="AnimeStudio.PInvoke"><HintPath>F:\AAA_ZMD\endfield\recon\endfieldstudio\EndfieldStudio-main\AnimeStudio.CLI\bin\Release\net10.0\AnimeStudio.PInvoke.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

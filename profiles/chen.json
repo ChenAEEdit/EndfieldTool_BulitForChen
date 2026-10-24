@@ -1,0 +1,619 @@
+{
+  "schema": "endfield-chen-tool-profile-v1",
+  "character": "chen",
+  "display_name": "陈千语",
+  "build": "20260821_c24495e5",
+  "game_assembly_sha256": "C24495E51B406F03B03890C4788EE618AE022C991405BE5D5B8B787CB775AE89",
+  "root_name": "chr_0005_chen_uimodel",
+  "root_path_id": "8239783119078153412",
+  "mesh_count": 10,
+  "vertex_count": 56490,
+  "animations": {
+    "ui": {
+      "label": "UI 行走 female_walk",
+      "clip_name": "female_walk",
+      "source_asset": "Chen_UI_Walk_Source.anim",
+      "rig": "Generic"
+    },
+    "acl": {
+      "label": "ACL 行走 customized walk",
+      "clip_name": "A_actor_chen_customized_state_walk_loop",
+      "source_asset": "Chen_Walk_Source.anim",
+      "rig": "Humanoid"
+    }
+  },
+  "bundles": [
+    {
+      "name": "00638e22dc82e09c92faef95.ab",
+      "group": "7064D8E2",
+      "md5": "974A1310479E455583344BB9C2E49028",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "01790ef149e2198537a73fe3.ab",
+      "group": "7064D8E2",
+      "md5": "DBFA9EDF2C3BFE4DE566FFAD06AB0032",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "03e706f37d918cce6aef3cf9.ab",
+      "group": "7064D8E2",
+      "md5": "9CD81405BFCFD4AD0FD013168B3ED9FB",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "078b81cd2c0277a3c7f6e598.ab",
+      "group": "7064D8E2",
+      "md5": "F3C0E9908A37E8FB6BD978C7DE19871C",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "099ed4e82ade0c376e67a7dd.ab",
+      "group": "7064D8E2",
+      "md5": "E40073602F4D161DCD648F85334B9722",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "13ae74b5e2560fc37f6dcbd9.ab",
+      "group": "7064D8E2",
+      "md5": "BB439304E55A41FA911C38AB56A21C38",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "1679171b73cab4d97f960cdd.ab",
+      "group": "7064D8E2",
+      "md5": "FDF16E601DDC3CB861E18A500D6CD461",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "1727712a93cabaa1c3951e5a.ab",
+      "group": "7064D8E2",
+      "md5": "F708720CFD116F5CFF5EE81282D41BCD",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "185b8e0ff38d478b27238a45.ab",
+      "group": "7064D8E2",
+      "md5": "9ADCA0D479BC7722DDC3AE628B5539E9",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "239bb6573a2ce1fa45c35796.ab",
+      "group": "7064D8E2",
+      "md5": "8933CC890D89E6C3245C09933CB89B75",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "24e69639826f8aae3b2deb30.ab",
+      "group": "7064D8E2",
+      "md5": "03C75737FD4AE4ADB94132EB868A513B",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "2699e699f63135f3465693b7.ab",
+      "group": "7064D8E2",
+      "md5": "110B11D538F339E55A23750F53609B37",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "2dbc0ac4e142db9292c8949b.ab",
+      "group": "0CE8FA57",
+      "md5": "394DBEACBD67DE00016D7DC75A1E55D7",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "2e2c42f7f19ba91ee0a5a97d.ab",
+      "group": "7064D8E2",
+      "md5": "24D0EB8B103D5231A9250E9E3A150782",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "304af68dc04ad493f3d84861.ab",
+      "group": "7064D8E2",
+      "md5": "5B685A94F9A1E967E17F538EF45F5143",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "3255b2d46cd204cea971f5ab.ab",
+      "group": "7064D8E2",
+      "md5": "9D448DD7042F9CEE79CDB901EE30CB51",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "3749f159a333ef8b627cfa66.ab",
+      "group": "7064D8E2",
+      "md5": "95A5BCF807558D2BB70EF3394502060E",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "38b582cb027a6d8c9c4347cc.ab",
+      "group": "7064D8E2",
+      "md5": "11A4F3C2239D36904183BEDF3D8986DE",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "394d53debd5912a93a5160e0.ab",
+      "group": "7064D8E2",
+      "md5": "6950F22F1428E8BA030A5468FAE9783F",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "3a3f434f355f7ee2e5194686.ab",
+      "group": "7064D8E2",
+      "md5": "C6C5E88606A7C06E50D62C7F787544F3",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "418bf85b31936bf1f35d8d9e.ab",
+      "group": "7064D8E2",
+      "md5": "89222551F3FE783DA441BD0B5A9CCEED",
+      "roles": [
+        "acl"
+      ]
+    },
+    {
+      "name": "41c86ac0cbd2d2318fe90180.ab",
+      "group": "7064D8E2",
+      "md5": "46A24360B77060F05885A76A12B80C15",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "4221fde948d08d652f19a1ed.ab",
+      "group": "0CE8FA57",
+      "md5": "0C5CB6BD5EE49EA00595BB8414CF62D3",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "439da941561fa42fc423ffae.ab",
+      "group": "7064D8E2",
+      "md5": "3D462CF1EEABA5574D4AD2BEC843D04C",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "497656735db1ec8ba0245517.ab",
+      "group": "7064D8E2",
+      "md5": "06FEA7D362B7EB288D45ECAC497E8D67",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "54426955b988e05036abd041.ab",
+      "group": "7064D8E2",
+      "md5": "2A90E1A18AACA9F120BABFCE1443CB12",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "553f4a429736353f86c6c203.ab",
+      "group": "7064D8E2",
+      "md5": "C33505DBEF4C356829E5F6609253438D",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "55447f66d844bc3558229248.ab",
+      "group": "7064D8E2",
+      "md5": "108503B4494F014C5A6FB576FB0E1C50",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "5703e5c93a9d37d10631af54.ab",
+      "group": "7064D8E2",
+      "md5": "5ACA409A6653F011DDEC9FCFF7212335",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "57c7aa6ace9816756f822c58.ab",
+      "group": "7064D8E2",
+      "md5": "6BD6D3770FA15087047D5C5C35A6325F",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "5c10a806dacd393acbab6aed.ab",
+      "group": "0CE8FA57",
+      "md5": "DD1AEA14B8B351BA1272A9B11D8D82DA",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "61d18745eb1e686987e7aa59.ab",
+      "group": "7064D8E2",
+      "md5": "3D8868B9D2D6968928CAACC85F384C64",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "68cd4add9b25cfce8eeaff4b.ab",
+      "group": "0CE8FA57",
+      "md5": "7C1FFD7FC17AD62D4738B9432955FBD2",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "695c7b67ac6202c0623ee9a2.ab",
+      "group": "7064D8E2",
+      "md5": "BD5E55FF83C32E1290F13E06473F1792",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "6e485732eee1a31fd7fc0469.ab",
+      "group": "7064D8E2",
+      "md5": "150F6C11CC2620C35B78206A7DBA5A02",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "70eff54203174d001b1f2a32.ab",
+      "group": "7064D8E2",
+      "md5": "6F8BE6727BD4EA5B50825C458076051E",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "73cc4437466711e1bfd9a248.ab",
+      "group": "0CE8FA57",
+      "md5": "F757E0C42A3434EDB38245FE0006B5AB",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "73e5524f1d065ceb2f31f679.ab",
+      "group": "7064D8E2",
+      "md5": "D68D2DF8BEFDA08E73E1EADE6B3641FB",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "742227d26a22ae6cec7d73ba.ab",
+      "group": "7064D8E2",
+      "md5": "5314518383E3957D12E14E68F5DC116E",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "76341d62af4ed1ee325b2550.ab",
+      "group": "7064D8E2",
+      "md5": "3DF34ABF4F734DF19CF91E6FA1871898",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "7a0532638be9d3e9df68b98f.ab",
+      "group": "7064D8E2",
+      "md5": "E29BB0E9B25D6087106D5C50C00BD061",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "7a406037ff14d657cc837fa1.ab",
+      "group": "7064D8E2",
+      "md5": "85835E2993D91349703F3A4281F680D7",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "7ddb3062ee45d0d51257c716.ab",
+      "group": "7064D8E2",
+      "md5": "1B9037E28848295039E814E159D481EC",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "7e7bdb8de0c141d85cb187bf.ab",
+      "group": "7064D8E2",
+      "md5": "C9CE0B6FCB9A8B4BCC1724F85CCE4437",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "883c322914dd6cf6f62424d8.ab",
+      "group": "0CE8FA57",
+      "md5": "11D42B90148F64829515408A8AF322F3",
+      "roles": [
+        "ui"
+      ]
+    },
+    {
+      "name": "8938f0c0f8692519b5c6ecbb.ab",
+      "group": "7064D8E2",
+      "md5": "CEE7A32FDAF7514AAE32B63E4752E7FC",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "8f7061ee528d4df6cbb95ebf.ab",
+      "group": "7064D8E2",
+      "md5": "10CAFA215C24C235D1E263AB6DE47458",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "9a359320366f7fff24b47c5b.ab",
+      "group": "7064D8E2",
+      "md5": "1702A7898D092B04B0BBA1541AA81430",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "9b5c098688123e5186d615d7.ab",
+      "group": "7064D8E2",
+      "md5": "E97701648F6331F458D70191AE36BF33",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "9c609c3d4fb1eddfbdb6dbd7.ab",
+      "group": "7064D8E2",
+      "md5": "12FE6223C6496156056A01DAAE16BDA9",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "9ff10b84b1e5d4764bd733db.ab",
+      "group": "7064D8E2",
+      "md5": "DC46E8A06D49B6596E24D643902C3202",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "a241dc909c5f238fe6c1f123.ab",
+      "group": "7064D8E2",
+      "md5": "02FD7EB9EBCF223CB661706D10909769",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "a3e567a75a3baa146889b321.ab",
+      "group": "7064D8E2",
+      "md5": "82C56B6C4C04E6DC146B7815CC7B419C",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "a7b64814d1a7d48f64d37642.ab",
+      "group": "7064D8E2",
+      "md5": "3FA6A526D1152E88F7DE750FA4D0109B",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "b388fccd11678e869f1d46a6.ab",
+      "group": "7064D8E2",
+      "md5": "15A6C67DFD2AE42A91609A3DF11C8104",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "ba5c1cec13ec490ee4dddf98.ab",
+      "group": "7064D8E2",
+      "md5": "72F6460B55F7AB86DC36254F78B70413",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "c60ad23f99ac5e95b01c73c3.ab",
+      "group": "7064D8E2",
+      "md5": "22D3605EEA5F6E03C622C2B7093B6846",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "c7576d5abe5916c3455b0c36.ab",
+      "group": "7064D8E2",
+      "md5": "264AB0EA347AC8AB5984CCCF06AFA46C",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "cbeed733415a35f5b43b92c6.ab",
+      "group": "7064D8E2",
+      "md5": "033A1365507214315265BBEBA1802878",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "d0d512c09887779b738febe0.ab",
+      "group": "7064D8E2",
+      "md5": "0AE272A1AEE4771F7361A762F2BDD36D",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "d3431679e0c03e24c9ce73f0.ab",
+      "group": "7064D8E2",
+      "md5": "0B0223EB9CEB1E27F0C9E6229197B1D7",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "d5c80f5cbc8a75ddfc0c32e7.ab",
+      "group": "7064D8E2",
+      "md5": "DA600D0295481AB54F51C5914B29B700",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "d71ccca042590723d1736a38.ab",
+      "group": "7064D8E2",
+      "md5": "47D360FAB955291C5262F11069FF1E8D",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "e007582048ea60283cf6f33f.ab",
+      "group": "7064D8E2",
+      "md5": "129E3AE6CB2B93E60DAF09970F8C221E",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "e468ea94150772aea942dd41.ab",
+      "group": "0CE8FA57",
+      "md5": "DC1A8468B8171B2FD5D6C1572B5FE81C",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "e904cfd0e8d4ca448774b1d2.ab",
+      "group": "7064D8E2",
+      "md5": "7F5DBFD2809F10075648EED37132F4F0",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "eaf18186d82c38cc10bcaaee.ab",
+      "group": "7064D8E2",
+      "md5": "1E1A1B02A9C498AC36A195C074734138",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "edf7162b3443935770b5b02e.ab",
+      "group": "7064D8E2",
+      "md5": "0E2226D687BE5BF0DF581E4D838040BC",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "eea0c291c17957f440b2b3dc.ab",
+      "group": "7064D8E2",
+      "md5": "B2D484416626FA5731363BF3802A9877",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "f0b12fe7ad02e511c53b7d47.ab",
+      "group": "7064D8E2",
+      "md5": "0563C7A92E028DFBE1760B2EB56912F6",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "f751bbeeae58ef095fbc17ff.ab",
+      "group": "7064D8E2",
+      "md5": "68AC424680FD0E1A39C5B6269E1376B8",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "f7ad1a6d14a4b56da555d4c6.ab",
+      "group": "7064D8E2",
+      "md5": "6BF06F06425BBC8E50D11F12212D00E8",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "fad70f510dbf5f5582d409ba.ab",
+      "group": "7064D8E2",
+      "md5": "B70C2B953FC8456455CCD7A807331F34",
+      "roles": [
+        "model"
+      ]
+    },
+    {
+      "name": "fb981484cc68fdf7fe73db73.ab",
+      "group": "7064D8E2",
+      "md5": "71E129F6616F7085FDE0F7A6A94905A9",
+      "roles": [
+        "model"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+diff --git a/AnimeStudio/Classes/Shader.cs b/AnimeStudio/Classes/Shader.cs
+--- a/AnimeStudio/Classes/Shader.cs
++++ b/AnimeStudio/Classes/Shader.cs
+@@ -1230,6 +1230,8 @@ namespace AnimeStudio
+         public byte[] compressedBlob;
+         public uint[] stageCounts;
+         public ShaderPlatformInfos[] platformInfos;
++        public bool m_MetadataOnly;
++        public string m_TailParseWarning;
++        public long m_TailFailureRelativePosition;
+-
+         public override string Name => m_ParsedForm?.m_Name ?? m_Name;
+         // public static bool HasPlatformInfos(SerializedType type) => type.Match("D114ED797139152A2E4A42339CF4AA8E"); // Star Rail
+@@ -1249,6 +1252,8 @@ namespace AnimeStudio
+                     Logger.Error($"Cannot parse shader, no more bytes left for asset {reader.assetsFile.fileName} of {reader.assetsFile.originalPath} at path {reader.m_PathID}.");
+                     return;
+                 }
++                try
++                {
+                 if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
+                 {
+                     m_UseExternalBlobs = reader.ReadBoolean();
+@@ -1348,5 +1353,17 @@ namespace AnimeStudio
+                 var m_ShaderIsBaked = reader.ReadBoolean();
+                 reader.AlignStream();
++                }
++                catch (System.IO.EndOfStreamException error) when (
++                    reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
++                {
++                    m_MetadataOnly = true;
++                    m_TailParseWarning = error.Message;
++                    m_TailFailureRelativePosition = reader.Position - reader.byteStart;
++                    Logger.Warning(
++                        $"Preserving metadata-only Endfield shader {m_ParsedForm?.m_Name} " +
++                        $"from {reader.assetsFile.fileName} path {reader.m_PathID}; " +
++                        $"binary tail stopped at 0x{m_TailFailureRelativePosition:X} of 0x{reader.byteSize:X}.");
++                }
+             }
+             else
+             {

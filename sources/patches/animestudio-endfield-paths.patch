@@ -1,0 +1,75 @@
+diff --git a/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs b/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs
+--- a/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs
++++ b/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs
+@@ -4,11 +4,14 @@ using System.Text;
+ using System.Collections.Generic;
+ using SevenZip;
+ using System;
++using System.Runtime.CompilerServices;
+ 
+ namespace AnimeStudio
+ {
+     public static class AnimationClipExtensions
+     {
++        private static readonly ConditionalWeakTable<AssetsManager, Dictionary<uint, string>> GlobalTosCache = new();
++
+         public static float DefaultFloatWeight => 1.0f / 3.0f;
+         public static Vector3 DefaultVector3Weight => new Vector3(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f);
+         public static Quaternion DefaultQuaternionWeight => new Quaternion(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f);
+@@ -83,8 +86,27 @@ namespace AnimeStudio
+                         break;
+                 }
+             }
++            clip.AddTOS(GlobalTosCache.GetValue(clip.assetsFile.assetsManager, BuildGlobalTOS), tos);
+             return tos;
+         }
++        private static Dictionary<uint, string> BuildGlobalTOS(AssetsManager manager)
++        {
++            var result = new Dictionary<uint, string>() { { 0, string.Empty } };
++            var transforms = manager.assetsFileList.SelectMany(file => file.Objects).OfType<Transform>();
++            foreach (var root in transforms.Where(transform => !transform.m_Father.TryGet(out _)))
++            {
++                if (!root.m_GameObject.TryGet(out var gameObject))
++                {
++                    continue;
++                }
++
++                foreach (var pair in gameObject.BuildTOS())
++                {
++                    result.TryAdd(pair.Key, pair.Value);
++                }
++            }
++            return result;
++        }
+         private static bool AddAvatarTOS(this AnimationClip clip, Avatar avatar, Dictionary<uint, string> tos)
+         {
+             if (avatar?.m_TOS == null)
+@@ -120,20 +144,18 @@ namespace AnimeStudio
+         }
+         private static bool AddTOS(this AnimationClip clip, Dictionary<uint, string> src, Dictionary<uint, string> dest)
+         {
+-            int tosCount = clip.m_ClipBindingConstant.genericBindings.Count;
+-            for (int i = 0; i < tosCount; i++)
++            var requiredPaths = clip.m_ClipBindingConstant.genericBindings
++                .Select(binding => binding.path)
++                .Distinct()
++                .ToArray();
++            foreach (var pathHash in requiredPaths)
+             {
+-                var binding = clip.m_ClipBindingConstant.genericBindings[i];
+-                if (src.TryGetValue(binding.path, out string path))
++                if (src.TryGetValue(pathHash, out string path))
+                 {
+-                    dest[binding.path] = path;
+-                    if (dest.Count == tosCount)
+-                    {
+-                        return true;
+-                    }
++                    dest[pathHash] = path;
+                 }
+             }
+-            return false;
++            return requiredPaths.All(dest.ContainsKey);
+         }
+         private static bool IsAnimationContainsClip(this AnimationClip clip, Animation animation)
+         {

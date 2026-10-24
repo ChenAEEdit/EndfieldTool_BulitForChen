@@ -1,0 +1,285 @@
+diff --git a/global.json b/global.json
+index a0e9d0e..f7772fe 100644
+--- a/global.json
++++ b/global.json
+@@ -1,6 +1,6 @@
+ {
+   "sdk": {
+-    "version": "10.0.301",
++    "version": "10.0.300",
+     "rollForward": "latestPatch",
+     "allowPrerelease": false
+   }
+diff --git a/AnimeStudio.CLI/Studio.cs b/AnimeStudio.CLI/Studio.cs
+index 483320f..3ddcc1a 100644
+--- a/AnimeStudio.CLI/Studio.cs
++++ b/AnimeStudio.CLI/Studio.cs
+@@ -490,8 +490,8 @@ namespace AnimeStudio.CLI
+                     break;
+                 case Mesh _ when ClassIDType.Mesh.CanExport():
+                 case TextAsset _ when ClassIDType.TextAsset.CanExport():
+-                case AnimationClip _ when ClassIDType.Font.CanExport():
+-                case Font _ when ClassIDType.GameObject.CanExport():
++                case AnimationClip _ when ClassIDType.AnimationClip.CanExport():
++                case Font _ when ClassIDType.Font.CanExport():
+                 case MovieTexture _ when ClassIDType.MovieTexture.CanExport():
+                 case Sprite _ when ClassIDType.Sprite.CanExport():
+                 case Material _ when ClassIDType.Material.CanExport():
+diff --git a/AnimeStudio.CLI/Program.cs b/AnimeStudio.CLI/Program.cs
+index ce8fff9..6706236 100644
+--- a/AnimeStudio.CLI/Program.cs
++++ b/AnimeStudio.CLI/Program.cs
+@@ -108,6 +108,31 @@ namespace AnimeStudio.CLI
+ 
+                     classTypeFilter = classTypeFilterList.ToArray();
+ 
++                    if (ClassIDType.AnimationClip.CanExport())
++                    {
++                        ClassIDType[] animationDependencies =
++                        {
++                            ClassIDType.Animation,
++                            ClassIDType.Animator,
++                            ClassIDType.AnimatorController,
++                            ClassIDType.AnimatorOverrideController,
++                            ClassIDType.Avatar,
++                            ClassIDType.GameObject,
++                            ClassIDType.Material,
++                            ClassIDType.Mesh,
++                            ClassIDType.MeshFilter,
++                            ClassIDType.MeshRenderer,
++                            ClassIDType.MonoScript,
++                            ClassIDType.RectTransform,
++                            ClassIDType.SkinnedMeshRenderer,
++                            ClassIDType.Transform,
++                        };
++                        foreach (var dependency in animationDependencies)
++                        {
++                            TypeFlags.SetType(dependency, true, dependency.CanExport());
++                        }
++                    }
++
+                     if (ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport())
+                     {
+                         TypeFlags.SetType(ClassIDType.Texture2D, true, exportTexture2D);
+diff --git a/AnimeStudio.CLI/AnimeStudio.CLI.csproj b/AnimeStudio.CLI/AnimeStudio.CLI.csproj
+index 15f7db1..d1ebb6c 100644
+--- a/AnimeStudio.CLI/AnimeStudio.CLI.csproj
++++ b/AnimeStudio.CLI/AnimeStudio.CLI.csproj
+@@ -15,6 +15,7 @@
+   <ItemGroup>
+ 	<ProjectReference Include="..\AnimeStudio.Utility\AnimeStudio.Utility.csproj" />
+     <ProjectReference Include="..\AnimeStudio\AnimeStudio.csproj" />
++    <ProjectReference Include="..\..\..\Ruri.RipperHook\Source\Ruri.ACL\Ruri.ACL.csproj" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs b/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs
+index 187cd34..f75c0b6 100644
+--- a/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs
++++ b/AnimeStudio.Utility/YAML/AnimationClipExtensions.cs
+@@ -86,11 +86,21 @@ namespace AnimeStudio
+         }
+         private static bool AddAvatarTOS(this AnimationClip clip, Avatar avatar, Dictionary<uint, string> tos)
+         {
++            if (avatar?.m_TOS == null)
++            {
++                return false;
++            }
++
+             return clip.AddTOS(avatar.m_TOS.ToDictionary(x => x.Key, x => x.Value), tos);
+         }
+         private static bool AddAnimatorTOS(this AnimationClip clip, Animator animator, Dictionary<uint, string> tos)
+         {
+-            if (animator.m_Avatar.TryGet(out var avatar))
++            if (animator == null)
++            {
++                return false;
++            }
++
++            if (animator.m_Avatar != null && animator.m_Avatar.TryGet(out var avatar))
+             {
+                 if (clip.AddAvatarTOS(avatar, tos))
+                 {
+@@ -103,7 +113,7 @@ namespace AnimeStudio
+         }
+         private static bool AddAnimationTOS(this AnimationClip clip, Animation animation, Dictionary<uint, string> tos)
+         {
+-            if (animation.m_GameObject.TryGet(out var go))
++            if (animation?.m_GameObject != null && animation.m_GameObject.TryGet(out var go))
+             {
+                 Dictionary<uint, string> animationTOS = go.BuildTOS();
+                 return clip.AddTOS(animationTOS, tos);
+@@ -129,11 +139,11 @@ namespace AnimeStudio
+         }
+         private static bool IsAnimationContainsClip(this AnimationClip clip, Animation animation)
+         {
+-            return animation.IsContainsAnimationClip(clip);
++            return animation != null && animation.IsContainsAnimationClip(clip);
+         }
+         private static bool IsAnimatorContainsClip(this AnimationClip clip, Animator animator)
+         {
+-            if (animator.m_Controller.TryGet(out var runtime))
++            if (animator?.m_Controller != null && animator.m_Controller.TryGet(out var runtime))
+             {
+                 return runtime.IsContainsAnimationClip(clip);
+             }
+diff --git a/AnimeStudio.Utility/YAML/AnimationClipConverter.cs b/AnimeStudio.Utility/YAML/AnimationClipConverter.cs
+index c8843a1..b4ee23c 100644
+--- a/AnimeStudio.Utility/YAML/AnimationClipConverter.cs
++++ b/AnimeStudio.Utility/YAML/AnimationClipConverter.cs
+@@ -1,8 +1,12 @@
+ ﻿using System;
++using System.IO;
+ using System.Linq;
+ using System.Collections.Generic;
+ using System.Text.RegularExpressions;
+ using SevenZip;
++#if NET10_0
++using Ruri.ACL;
++#endif
+ 
+ namespace AnimeStudio
+ {
+@@ -59,6 +63,10 @@ namespace AnimeStudio
+             var bindings = animationClip.m_ClipBindingConstant;
+             var tos = animationClip.FindTOS();
+ 
++#if NET10_0
++            DecodeEndfieldAclBuffer(m_Clip, bindings);
++#endif
++
+             var streamedFrames = m_Clip.m_StreamedClip.ReadData();
+             var lastDenseFrame = m_Clip.m_DenseClip.m_FrameCount / m_Clip.m_DenseClip.m_SampleRate;
+             var lastSampleFrame = streamedFrames.Count > 1 ? streamedFrames[streamedFrames.Count - 2].time : 0.0f;
+@@ -85,6 +93,117 @@ namespace AnimeStudio
+             CreateCurves();
+         }
+ 
++#if NET10_0
++        private void DecodeEndfieldAclBuffer(Clip clip, AnimationClipBindingConstant bindings)
++        {
++            if (!game.Type.IsArknightsEndfield() || animationClip.m_AclCompressedBuffer == null)
++            {
++                return;
++            }
++
++            var buffer = animationClip.m_AclCompressedBuffer;
++            if ((buffer.TransformBufferData?.Length ?? 0) == 0 &&
++                (buffer.FloatBufferData?.Length ?? 0) == 0 &&
++                (buffer.RootMotionBufferData?.Length ?? 0) == 0)
++            {
++                return;
++            }
++            var transformDecoder = new AclDecompressor(buffer.TransformBufferData);
++            var floatDecoder = new AclFloatDecompressor(buffer.FloatBufferData);
++            if (!transformDecoder.IsValid)
++            {
++                throw new InvalidDataException($"Invalid Endfield transform ACL buffer in {animationClip.m_Name}.");
++            }
++
++            int floatBindingCount = bindings.genericBindings.Count(binding => binding.typeID != ClassIDType.Transform);
++            if (floatBindingCount > 0 && (!floatDecoder.IsValid || floatDecoder.NumTracks != floatBindingCount))
++            {
++                throw new InvalidDataException(
++                    $"Endfield float ACL track mismatch in {animationClip.m_Name}: " +
++                    $"bindings={floatBindingCount}, tracks={floatDecoder.NumTracks}.");
++            }
++
++            float sampleRate = animationClip.m_SampleRate > 0 ? animationClip.m_SampleRate : clip.m_DenseClip.m_SampleRate;
++            float duration = Math.Max(transformDecoder.Duration, floatDecoder.IsValid ? floatDecoder.Duration : 0.0f);
++            int frameCount = checked((int)MathF.Round(duration * sampleRate) + 1);
++            int curveCount = bindings.genericBindings.Sum(binding =>
++                binding.typeID == ClassIDType.Transform ? binding.GetDimension() : 1);
++            var samples = new float[checked(frameCount * curveCount)];
++
++            for (int frameIndex = 0; frameIndex < frameCount; frameIndex++)
++            {
++                float time = frameIndex / sampleRate;
++                if (!transformDecoder.Sample(time, out var transforms) || transforms == null)
++                {
++                    throw new InvalidDataException($"Failed to sample Endfield transform ACL buffer at {time} in {animationClip.m_Name}.");
++                }
++
++                float[] floatValues = Array.Empty<float>();
++                if (floatBindingCount > 0 && (!floatDecoder.Sample(time, out floatValues) || floatValues == null))
++                {
++                    throw new InvalidDataException($"Failed to sample Endfield float ACL buffer at {time} in {animationClip.m_Name}.");
++                }
++
++                int positionTrack = 0;
++                int rotationTrack = 0;
++                int scaleTrack = 0;
++                int floatTrack = 0;
++                int sampleOffset = frameIndex * curveCount;
++                int cursor = sampleOffset;
++
++                foreach (var binding in bindings.genericBindings)
++                {
++                    if (binding.typeID == ClassIDType.Transform)
++                    {
++                        switch (binding.attribute)
++                        {
++                            case 1:
++                                var translation = transforms[positionTrack++].Translation;
++                                samples[cursor++] = translation.X;
++                                samples[cursor++] = translation.Y;
++                                samples[cursor++] = translation.Z;
++                                break;
++                            case 2:
++                                var rotation = transforms[rotationTrack++].Rotation;
++                                samples[cursor++] = rotation.X;
++                                samples[cursor++] = rotation.Y;
++                                samples[cursor++] = rotation.Z;
++                                samples[cursor++] = rotation.W;
++                                break;
++                            case 3:
++                                var scale = transforms[scaleTrack++].Scale;
++                                samples[cursor++] = scale.X;
++                                samples[cursor++] = scale.Y;
++                                samples[cursor++] = scale.Z;
++                                break;
++                            default:
++                                throw new InvalidDataException(
++                                    $"Unsupported Endfield transform binding attribute {binding.attribute} in {animationClip.m_Name}.");
++                        }
++                    }
++                    else
++                    {
++                        samples[cursor++] = floatValues[floatTrack++];
++                    }
++                }
++
++                if (cursor != sampleOffset + curveCount)
++                {
++                    throw new InvalidDataException(
++                        $"Endfield ACL curve layout mismatch in {animationClip.m_Name}: " +
++                        $"wrote {cursor - sampleOffset}, expected {curveCount} values.");
++                }
++            }
++
++            clip.m_DenseClip.m_FrameCount = frameCount;
++            clip.m_DenseClip.m_CurveCount = checked((uint)curveCount);
++            clip.m_DenseClip.m_SampleRate = sampleRate;
++            clip.m_DenseClip.m_BeginTime = 0.0f;
++            clip.m_DenseClip.m_SampleArray = samples;
++            animationClip.m_Compressed = false;
++        }
++#endif
++
+         private void CreateCurves()
+         {
+             m_translations.AsEnumerable().ToList().ForEach(x => x.Key.curve.m_Curve.AddRange(x.Value));
+diff --git a/AnimeStudio.Utility/AnimeStudio.Utility.csproj b/AnimeStudio.Utility/AnimeStudio.Utility.csproj
+index 41f6d6d..8d1a31d 100644
+--- a/AnimeStudio.Utility/AnimeStudio.Utility.csproj
++++ b/AnimeStudio.Utility/AnimeStudio.Utility.csproj
+@@ -21,4 +21,8 @@
+     <ProjectReference Include="..\AnimeStudio\AnimeStudio.csproj" />
+   </ItemGroup>
+ 
++  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
++    <ProjectReference Include="..\..\..\Ruri.RipperHook\Source\Ruri.ACL\Ruri.ACL.csproj" />
++  </ItemGroup>
++
+ </Project>
+ 
