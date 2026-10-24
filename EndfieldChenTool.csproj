@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>EndfieldChenTool</AssemblyName>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <DefaultItemExcludes>$(DefaultItemExcludes);templates/**;runtime/**;licenses/**;sources/**;Crypto/**</DefaultItemExcludes>
   </PropertyGroup>

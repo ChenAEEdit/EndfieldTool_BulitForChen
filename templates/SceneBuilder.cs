@@ -59,6 +59,10 @@ public static class SceneBuilder
         public string model, clip, scene, unityVersion;
         public bool avatarValid, avatarHuman, humanoidClip, passed;
         public bool savedPoseMatchesModel;
+        public string faceCheckStatus;
+        public int excludedSharedFaceCurves;
+        public float sourceFaceMaximumKeyRange;
+        public string[] preservedFacePaths;
         public int transformCount, meshCount, vertexCount, bindings, remappedCurves, missingCurves;
         public int repairedNonFiniteTangents;
         public int removedScenePositionCurves;
@@ -70,6 +74,12 @@ public static class SceneBuilder
         public Sample[] samples;
         public string error;
     }
+    [Serializable] class FaceCheck
+    {
+        public int boneCount, changedBones;
+        public float maximumPositionDelta, maximumRotationDelta, maximumScaleDelta;
+        public bool passed;
+    }
     [Serializable] class Sample
     {
         public float time;
@@ -79,11 +89,13 @@ public static class SceneBuilder
         public float hipsHead, hipsLeftFoot;
         public Quaternion leftThighRotation, rightThighRotation;
         public float normalizedTime;
+        public FaceCheck face;
     }
     [Serializable] class RuntimeAudit
     {
         public bool passed;
         public float humanScale, legRotationChange;
+        public string faceCheckStatus;
         public Sample[] samples;
         public string error;
     }
@@ -120,7 +132,7 @@ public static class SceneBuilder
             {
                 var renderers = animator.GetComponentsInChildren<SkinnedMeshRenderer>();
                 var vertices = Bake(renderers);
-                runtimeSamples.Add(new Sample
+                var runtimeSample = new Sample
                 {
                     time = Time.time,
                     size = BoundsFor(renderers, vertices).size,
@@ -130,8 +142,11 @@ public static class SceneBuilder
                     leftThighRotation = GetBone(animator, HumanBodyBones.LeftUpperLeg).localRotation,
                     rightThighRotation = GetBone(animator, HumanBodyBones.RightUpperLeg).localRotation,
                     normalizedTime = animator.GetCurrentAnimatorStateInfo(0).normalizedTime
-                });
+                };
+                if (uiWalk) runtimeSample.face = MeasureFace(animator.gameObject);
+                runtimeSamples.Add(runtimeSample);
                 Capture(Camera.main, Path.Combine(report, "chen_runtime_" + runtimeSamples.Count + ".png"), false);
+                if (uiWalk) CaptureFace(Camera.main, animator.gameObject, Path.Combine(report, "chen_runtime_face_" + runtimeSamples.Count + ".png"), false);
             }
             if (runtimeSamples.Count < 3) return;
             float angle = Quaternion.Angle(runtimeSamples[0].leftThighRotation, runtimeSamples[2].leftThighRotation);
@@ -140,7 +155,8 @@ public static class SceneBuilder
                 humanScale = animator.isHuman ? animator.humanScale : 1,
                 legRotationChange = angle,
                 samples = runtimeSamples.ToArray(),
-                passed = angle > 2 && (!animator.isHuman || animator.humanScale > .9f && animator.humanScale < 1.1f) && runtimeSamples.All(s => s.nonFiniteVertices == 0 && s.size.y > 1 && s.size.y < 2.5f && s.size.magnitude < 4)
+                faceCheckStatus = uiWalk ? (runtimeSamples.All(s => s.face != null && s.face.passed) ? "passed" : "failed") : "not_requested",
+                passed = angle > 2 && (!animator.isHuman || animator.humanScale > .9f && animator.humanScale < 1.1f) && runtimeSamples.All(s => s.nonFiniteVertices == 0 && s.size.y > 1 && s.size.y < 2.5f && s.size.magnitude < 4) && (!uiWalk || runtimeSamples.All(s => s.face != null && s.face.passed))
             };
             File.WriteAllText(Path.Combine(report, "runtime_verification.json"), JsonUtility.ToJson(result, true));
             SessionState.SetBool("EndfieldChenTool.RuntimeCheck", false);
@@ -226,6 +242,8 @@ public static class SceneBuilder
                 if (savedAvatar) { EditorUtility.CopySerialized(avatar, savedAvatar); UnityEngine.Object.DestroyImmediate(avatar); avatar = savedAvatar; }
                 else AssetDatabase.CreateAsset(avatar, Base + "/ChenAvatar.asset");
             }
+            var preservedFacePaths = uiWalk ? new HashSet<string>(FaceTransforms(root).Select(t => AnimationUtility.CalculateTransformPath(t, root.transform))) : new HashSet<string>();
+            audit.preservedFacePaths = preservedFacePaths.OrderBy(p => p).ToArray();
             var paths = transforms.ToDictionary(t => AnimationUtility.CalculateTransformPath(t, root.transform), t => t);
             File.WriteAllLines(Path.Combine(report, "hierarchy.txt"), paths.Select(p => p.Key + " pos=" + p.Value.localPosition.ToString("F6") + " scale=" + p.Value.localScale.ToString("F6")));
             audit.transformCount = transforms.Length;
@@ -247,6 +265,15 @@ public static class SceneBuilder
                     if (candidates.Length != 1) { missing.Add(binding.path); continue; }
                     target.path = candidates[0];
                     audit.remappedCurves++;
+                }
+                // Shared female locomotion contains another facial rest pose.
+                // Keep Chen's face while retaining head and body motion.
+                if (uiWalk && binding.type == typeof(Transform) && preservedFacePaths.Contains(target.path))
+                {
+                    var faceKeys = AnimationUtility.GetEditorCurve(source, binding).keys;
+                    audit.excludedSharedFaceCurves++;
+                    if (faceKeys.Length > 0) audit.sourceFaceMaximumKeyRange = Math.Max(audit.sourceFaceMaximumKeyRange, faceKeys.Max(k => k.value) - faceKeys.Min(k => k.value));
+                    continue;
                 }
                 targetBindings.Add(target);
                 var curve = AnimationUtility.GetEditorCurve(source, binding);
@@ -316,9 +343,11 @@ public static class SceneBuilder
             animator.Rebind();
             animator.Update(0);
             var samples = new List<Sample>();
-            for (int i = 0; i <= 16; i++)
+            var sampleTimes = Enumerable.Range(0, 17).Select(i => clip.length * i / 17f).ToList();
+            if (uiWalk) sampleTimes.Add(Math.Min(20f / clip.frameRate, clip.length));
+            for (int i = 0; i < sampleTimes.Count; i++)
             {
-                float time = clip.length * i / 17f;
+                float time = sampleTimes[i];
                 animator.Play("Walk", 0, time / clip.length);
                 animator.Update(0.00001f);
                 var vertices = Bake(renderers);
@@ -349,11 +378,14 @@ public static class SceneBuilder
                     rightThighRotation = GetBone(animator, HumanBodyBones.RightUpperLeg).localRotation,
                     normalizedTime = animator.GetCurrentAnimatorStateInfo(0).normalizedTime
                 };
+                if (uiWalk) s.face = MeasureFace(root);
                 samples.Add(s);
+                if (uiWalk && (i % 4 == 0 || i == sampleTimes.Count - 1)) CaptureFace(camera, root, Path.Combine(report, "chen_face_frame_" + Mathf.RoundToInt(time * clip.frameRate) + ".png"));
                 if (i % 4 == 0) Capture(camera, Path.Combine(report, "chen_walk_" + i.ToString("D2") + ".png"));
             }
             audit.samples = samples.ToArray();
-            audit.passed = audit.missingCurves == 0 && samples.All(s => s.nonFiniteVertices == 0 && s.size.magnitude < restBounds.size.magnitude * 3 && s.edgeStretch99 < 3);
+            audit.faceCheckStatus = uiWalk ? (samples.All(s => s.face != null && s.face.passed) ? "passed" : "failed") : "not_requested";
+            audit.passed = audit.missingCurves == 0 && samples.All(s => s.nonFiniteVertices == 0 && s.size.magnitude < restBounds.size.magnitude * 3 && s.edgeStretch99 < 3) && (!uiWalk || samples.All(s => s.face != null && s.face.passed));
             // Sampling writes to real Transforms even outside Play mode. Restore
             // the model pose before serializing the scene; runtime starts at frame 0.
             animator.enabled = false;
@@ -364,7 +396,7 @@ public static class SceneBuilder
                 transforms[i].localScale = restScales[i];
             }
             animator.enabled = true;
-            root.AddComponent<PlaybackControls>().clipLabel = uiWalk ? "UI female_walk / Generic / loop" : "Customized walk / Humanoid / loop";
+            root.AddComponent<PlaybackControls>().clipLabel = uiWalk ? "Female walk / neutral face / loop" : "Customized walk / Humanoid / loop";
             Capture(camera, Path.Combine(report, "chen_saved_rest.png"));
             EditorSceneManager.SaveScene(scene, ScenePath);
             AssetDatabase.SaveAssets();
@@ -397,6 +429,21 @@ public static class SceneBuilder
         string path = Base + "/Materials/" + name + ".mat";
         var material = AssetDatabase.LoadAssetAtPath<Material>(path);
         if (!material) { material = new Material(Shader.Find("Standard")); AssetDatabase.CreateAsset(material, path); }
+        if (name.IndexOf("eyeshadow", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("eyewhiteshadow", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            // Basic preview fallback for the game's translucent eye-shadow overlay.
+            material.mainTexture = null;
+            material.color = new Color(.08f, .06f, .045f, .16f);
+            material.SetFloat("_Mode", 3);
+            material.SetInt("_SrcBlend", (int)BlendMode.One);
+            material.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            material.SetInt("_ZWrite", 0);
+            material.DisableKeyword("_ALPHATEST_ON"); material.DisableKeyword("_ALPHABLEND_ON");
+            material.EnableKeyword("_ALPHAPREMULTIPLY_ON"); material.renderQueue = (int)RenderQueue.Transparent;
+            material.SetFloat("_Glossiness", 0); material.SetFloat("_SpecularHighlights", 0);
+            EditorUtility.SetDirty(material);
+            return material;
+        }
         string part = name.Contains("body") ? "body" : name.Contains("hair") ? "hair" : name.Contains("iris") ? "iris" : name.Contains("face") || name.Contains("brow") ? "face" : "cloth";
         material.mainTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(Base + "/Textures/T_actor_chen_" + part + "_01_D.png");
         material.SetFloat("_Glossiness", 0.05f);
@@ -424,6 +471,59 @@ public static class SceneBuilder
         return animator.GetComponentsInChildren<Transform>().First(t => t.name == mapping.m_BoneName);
     }
     static float BoneDistance(Animator a, HumanBodyBones x, HumanBodyBones y) { var t = GetBone(a, x); var u = GetBone(a, y); return t && u ? Vector3.Distance(t.position, u.position) : -1; }
+    static Transform[] FaceTransforms(GameObject root)
+    {
+        var head = root.GetComponentsInChildren<Transform>(true).First(t => t.name == "Bip001_Head");
+        var facialMeshes = root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Where(r =>
+            r.sharedMesh && r.sharedMesh.vertexCount > 0 &&
+            (r.name.Contains("face_") || r.name.Contains("iris_") || r.name.Contains("eyebrow_") || r.name.Contains("eyeshadow_")));
+        var result = new HashSet<Transform>();
+        foreach (var bone in facialMeshes.SelectMany(r => r.bones))
+            for (var t = bone; t && t != head && t.IsChildOf(head); t = t.parent) result.Add(t);
+        if (result.Count == 0) throw new Exception("No facial skin bones found; cannot verify face preservation.");
+        return result.ToArray();
+    }
+    static FaceCheck MeasureFace(GameObject root)
+    {
+        var model = AssetDatabase.LoadAssetAtPath<GameObject>(ModelPath);
+        var rest = model.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, model.transform));
+        var result = new FaceCheck();
+        foreach (var t in FaceTransforms(root))
+        {
+            var original = rest[AnimationUtility.CalculateTransformPath(t, root.transform)];
+            float p = Vector3.Distance(t.localPosition, original.localPosition);
+            float q = Quaternion.Angle(t.localRotation, original.localRotation);
+            float s = Vector3.Distance(t.localScale, original.localScale);
+            result.boneCount++;
+            result.maximumPositionDelta = Math.Max(result.maximumPositionDelta, p);
+            result.maximumRotationDelta = Math.Max(result.maximumRotationDelta, q);
+            result.maximumScaleDelta = Math.Max(result.maximumScaleDelta, s);
+            if (p > .00001f || q > .05f || s > .00001f) result.changedBones++;
+        }
+        result.passed = result.boneCount > 0 && result.changedBones == 0;
+        return result;
+    }
+    static void CaptureFace(Camera camera, GameObject root, string path, bool snapshot = true)
+    {
+        var skin = root.GetComponentsInChildren<SkinnedMeshRenderer>().First(r => r.name.Contains("face_") && r.sharedMesh.vertexCount > 0);
+        var mesh = new Mesh(); skin.BakeMesh(mesh, false);
+        var vertices = mesh.vertices.Select(v => skin.transform.TransformPoint(v)).ToArray();
+        UnityEngine.Object.DestroyImmediate(mesh);
+        var bounds = new Bounds(vertices[0], Vector3.zero); foreach (var v in vertices) bounds.Encapsulate(v);
+        bool oldOrtho = camera.orthographic; float oldSize = camera.orthographicSize;
+        var oldPosition = camera.transform.position; var oldRotation = camera.transform.rotation;
+        try
+        {
+            camera.orthographic = true; camera.orthographicSize = .145f;
+            camera.transform.position = bounds.center + new Vector3(0, 0, .65f); camera.transform.LookAt(bounds.center);
+            Capture(camera, path, snapshot);
+        }
+        finally
+        {
+            camera.orthographic = oldOrtho; camera.orthographicSize = oldSize;
+            camera.transform.SetPositionAndRotation(oldPosition, oldRotation);
+        }
+    }
     static Camera MakeCamera(Bounds bounds)
     {
         var camera = new GameObject("Main Camera").AddComponent<Camera>();

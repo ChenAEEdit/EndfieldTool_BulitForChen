@@ -1,0 +1,122 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+
+public static class FaceDiagnostics
+{
+    [Serializable] class BuildResult { public bool passed, savedPoseMatchesModel; public string faceCheckStatus, error; }
+    [Serializable] class Node
+    {
+        public string name, path;
+        public Vector3 restPosition, sampledPosition, sampledScale;
+        public float positionDelta, rotationDelta;
+        public string[] properties;
+    }
+    [Serializable] class Frame { public string mode; public float time; public Node[] changed; }
+    [Serializable] class Report { public string error; public float frameRate; public string[] facePaths; public Frame[] frames; public int faceCurveCount; public float maximumFaceCurveKeyRange; public string[] shadowMaterials; }
+    static string Out => Environment.GetEnvironmentVariable("CHEN_FACE_REPORT");
+    public static void RebuildManual()
+    {
+        try
+        {
+            foreach(string mode in new[]{"UseUiWalk","UseAclWalk"})
+            {
+                string report=Path.Combine(Out,"manual",mode);
+                Environment.SetEnvironmentVariable("CHEN_REPORT_DIR",report);
+                typeof(ChenReextractedBuilder).GetMethod(mode,BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,null);
+                typeof(ChenReextractedBuilder).GetMethod("Build",BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,new object[]{false});
+                var result=JsonUtility.FromJson<BuildResult>(File.ReadAllText(Path.Combine(report,"verification.json")));
+                if(!result.passed || !result.savedPoseMatchesModel || mode=="UseUiWalk" && result.faceCheckStatus!="passed")
+                    throw new Exception("Manual scene build failed: "+report+" "+result.error);
+            }
+            EditorSceneManager.OpenScene("Assets/EndfieldChenTool/Chen_UI_Walk.unity");
+            File.WriteAllText(Path.Combine(Out,"manual_rebuild_result.json"),"{\"passed\":true}");
+            EditorApplication.Exit(0);
+        }
+        catch(Exception e){File.WriteAllText(Path.Combine(Out,"manual_rebuild_result.json"),JsonUtility.ToJson(new BuildResult{error=e.ToString()},true));EditorApplication.Exit(7);}
+    }
+    public static void Run()
+    {
+        Directory.CreateDirectory(Out);
+        var report = new Report();
+        try
+        {
+            const string folder = "Assets/EndfieldChenTool";
+            EditorSceneManager.OpenScene(folder + "/Chen_UI_Walk.unity");
+            var root = UnityEngine.Object.FindObjectsByType<Animator>(FindObjectsSortMode.None).First(a => a.name == "Chen_Qianyu").gameObject;
+            root.GetComponent<Animator>().enabled = false;
+            var all = root.GetComponentsInChildren<Transform>(true);
+            var paths = all.ToDictionary(t => AnimationUtility.CalculateTransformPath(t, root.transform));
+            var head = all.First(t => t.name == "Bip001_Head");
+            var skins = root.GetComponentsInChildren<SkinnedMeshRenderer>().Where(r => r.sharedMesh && r.sharedMesh.vertexCount > 0).ToArray();
+            var faceSkins = skins.Where(r => r.name.Contains("face_") || r.name.Contains("iris_") || r.name.Contains("eyebrow_") || r.name.Contains("eyeshadow_")).ToArray();
+            var faceBones = new HashSet<Transform>(faceSkins.SelectMany(r => r.bones).Where(t => t && t != head && t.IsChildOf(head)));
+            var facePaths = new HashSet<string>(faceBones.Select(t => AnimationUtility.CalculateTransformPath(t,root.transform)));
+            report.facePaths = facePaths.OrderBy(s => s).ToArray();
+            var positions = all.Select(t => t.localPosition).ToArray();
+            var rotations = all.Select(t => t.localRotation).ToArray();
+            var scales = all.Select(t => t.localScale).ToArray();
+            var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(folder + "/Animations/Chen_UI_Walk.anim");
+            report.frameRate = clip.frameRate;
+            var filtered = UnityEngine.Object.Instantiate(clip);
+            foreach (var binding in AnimationUtility.GetCurveBindings(filtered))
+                if (binding.type == typeof(Transform) && facePaths.Contains(binding.path))
+                {
+                    var keys=AnimationUtility.GetEditorCurve(filtered,binding).keys;
+                    report.faceCurveCount++;
+                    report.maximumFaceCurveKeyRange=Mathf.Max(report.maximumFaceCurveKeyRange,keys.Max(k=>k.value)-keys.Min(k=>k.value));
+                    AnimationUtility.SetEditorCurve(filtered,binding,null);
+                }
+            var shadows=skins.Where(r=>r.name.Contains("eyeshadow_")).ToArray();
+            report.shadowMaterials=shadows.SelectMany(s=>s.sharedMaterials).Select(m=>m.name+" texture="+(m.mainTexture?m.mainTexture.name:"none")).ToArray();
+            var frames = new List<Frame>();
+            foreach (string mode in new[] { "rest", "original", "body_only", "body_only_shadow" })
+            foreach (float time in new[] { 0f, 20f/clip.frameRate, .7f, 1.1f })
+            {
+                for(int i=0;i<all.Length;i++) { all[i].localPosition=positions[i];all[i].localRotation=rotations[i];all[i].localScale=scales[i]; }
+                if(mode!="rest") (mode=="original"?clip:filtered).SampleAnimation(root,time);
+                if(mode=="body_only_shadow") foreach(var shadow in shadows)
+                {
+                    var material=new Material(Shader.Find("Standard"));
+                    material.color=new Color(.08f,.06f,.045f,.16f);
+                    material.SetFloat("_Mode",3); material.SetFloat("_SrcBlend",(int)UnityEngine.Rendering.BlendMode.One);
+                    material.SetFloat("_DstBlend",(int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                    material.SetInt("_ZWrite",0);material.EnableKeyword("_ALPHAPREMULTIPLY_ON");material.renderQueue=3000;
+                    material.SetFloat("_Glossiness",0);material.SetFloat("_SpecularHighlights",0);
+                    shadow.sharedMaterials=shadow.sharedMaterials.Select(m=>material).ToArray();
+                }
+                var changed = new List<Node>();
+                for(int i=0;i<all.Length;i++) if(faceBones.Contains(all[i]))
+                {
+                    var path=AnimationUtility.CalculateTransformPath(all[i],root.transform);
+                    float p=Vector3.Distance(positions[i],all[i].localPosition),q=Quaternion.Angle(rotations[i],all[i].localRotation);
+                    if(p>1e-6f || q>.01f || Vector3.Distance(scales[i],all[i].localScale)>1e-5f)
+                        changed.Add(new Node {name=all[i].name,path=path,restPosition=positions[i],sampledPosition=all[i].localPosition,
+                            sampledScale=all[i].localScale,positionDelta=p,rotationDelta=q,
+                            properties=AnimationUtility.GetCurveBindings(clip).Where(b=>b.path==path).Select(b=>b.propertyName).ToArray()});
+                }
+                frames.Add(new Frame{mode=mode,time=time,changed=changed.OrderByDescending(n=>n.positionDelta).ToArray()});
+                var camera=Camera.main;
+                var faceSkin=faceSkins.First(r=>r.name.Contains("face_"));
+                var mesh=new Mesh();faceSkin.BakeMesh(mesh,false);
+                var vertices=mesh.vertices.Select(v=>faceSkin.transform.TransformPoint(v)).ToArray();
+                var bounds=new Bounds(vertices[0],Vector3.zero);foreach(var v in vertices)bounds.Encapsulate(v);
+                UnityEngine.Object.DestroyImmediate(mesh);
+                camera.orthographic=true;camera.orthographicSize=.145f;
+                camera.transform.position=bounds.center+new Vector3(0,0,.65f);camera.transform.LookAt(bounds.center);
+                typeof(EndfieldChenTool.Generated.SceneBuilder).GetMethod("Capture",BindingFlags.Static|BindingFlags.NonPublic)
+                    .Invoke(null,new object[]{camera,Path.Combine(Out,mode+"-"+Mathf.RoundToInt(time*clip.frameRate)+".png"),true});
+                if(mode=="rest")break;
+            }
+            report.frames=frames.ToArray();
+        }
+        catch(Exception e){report.error=e.ToString();}
+        File.WriteAllText(Path.Combine(Out,"face_diagnostics.json"),JsonUtility.ToJson(report,true));
+        EditorApplication.Exit(String.IsNullOrEmpty(report.error)?0:7);
+    }
+}
