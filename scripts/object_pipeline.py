@@ -13,6 +13,7 @@ import sys
 import uuid
 from index_game_resources import ROOT, digest, emit, within, write_json
 from extract_plan_bundles import require
+from prepare_unity_adaptation import prepare_unity_package
 
 STATE = {}
 
@@ -35,6 +36,8 @@ def publish():
     STATE["result"]["updatedAt"] = datetime.now(timezone.utc).isoformat()
     write_json(STATE["run"] / "operation.json", STATE["result"])
     write_json(STATE["task"] / "objects/result.json", STATE["result"])
+    if STATE["result"]["mode"] == "prepare":
+        write_json(STATE["task"] / "objects/preparation.json", STATE["result"])
 
 
 def run_tool(relative, args):
@@ -124,6 +127,8 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
         STATE["result"]["warnings"].append("所选 Avatar 未由模型 Animator 引用确认；请核对骨架路径和单位。")
     require(all(clip and clip["kind"] == "AnimationClip" for clip in clips), "所选动画对象无效。")
     require(root or clips, "请选择模型或动画对象。")
+    if STATE["result"]["mode"] == "prepare":
+        require(root and clips and avatar, "生成适配包需要选择模型、Avatar 和动画。")
     require(len(clips) == len(set(row["key"] for row in clips)), "动画对象重复。")
     output = STATE["run"] / "exports"
     output.mkdir()
@@ -180,6 +185,12 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
     STATE["result"].update(status="partial" if failures else "exported_unverified", inventoryPath=str(inventory_path),
         message="导出结束；模型与原始动画尚未进行 Unity 适配或播放验证。")
     STATE["result"]["warnings"].append("动画为原始解码结果；未进行单位、播放模式、共享面部轨道或附加层适配。")
+    if STATE["result"]["mode"] == "prepare":
+        emit("准备独立 Unity 原生适配包…", 90)
+        package = prepare_unity_package(STATE, selection, root, clips)
+        for path in sorted(package.rglob("*")):
+            if path.is_file():
+                register_output(path, "UnityPackage")
 
 
 def register_output(path, kind, **extra):
@@ -192,7 +203,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--mode", required=True, choices=("inspect", "export"))
+    parser.add_argument("--mode", required=True, choices=("inspect", "export", "prepare"))
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--selection", type=Path)
     args = parser.parse_args()

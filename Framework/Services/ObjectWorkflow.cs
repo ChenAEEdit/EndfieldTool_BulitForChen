@@ -10,7 +10,7 @@ public sealed class ObjectWorkflow
     public async Task<ObjectOperationResult> ExecuteAsync(SavedPlan saved, string mode, string? inventoryPath,
         ObjectExportSelection? selection, IProgress<ExtractionProgress> progress, CancellationToken token)
     {
-        if (mode is not ("inspect" or "export")) throw new InvalidDataException("未知对象操作。");
+        if (mode is not ("inspect" or "export" or "prepare")) throw new InvalidDataException("未知对象操作。");
         var root = new WorkspaceStore().Prepare(saved.Plan.Options);
         var task = Path.Combine(root, "tasks", saved.Plan.Id.ToString("N"));
         if (!Path.GetFullPath(saved.FilePath).Equals(Path.Combine(task, "plan.json"), StringComparison.OrdinalIgnoreCase))
@@ -27,7 +27,7 @@ public sealed class ObjectWorkflow
         info.Environment["PYTHONIOENCODING"] = "utf-8";
         foreach (var argument in new[] { Path.Combine(AppContext.BaseDirectory, "scripts", "object_pipeline.py"),
             "--plan", saved.FilePath, "--run-id", runId, "--mode", mode }) info.ArgumentList.Add(argument);
-        if (mode == "export")
+        if (mode is "export" or "prepare")
         {
             if (inventoryPath == null || selection == null) throw new InvalidDataException("请先解析并选择对象。");
             var selectionPath = Path.Combine(run, "selection.json");
@@ -65,8 +65,9 @@ public sealed class ObjectWorkflow
             await stderr;
             token.ThrowIfCancellationRequested();
             if (process.ExitCode != 0 || !completed) throw new IOException((error ?? "对象操作未完成。") + "\n日志：" + Path.Combine(run, "objects.log"));
-            var result = ReadResult(saved) ?? throw new InvalidDataException("缺少本次对象结果。");
-            if (result.RunId != runId || result.Mode != mode || result.Status is not ("inspected" or "exported_unverified" or "partial"))
+            var result = JsonFiles.Read<ObjectOperationResult>(Path.Combine(run, "operation.json"));
+            if (result.Schema != "endfield-object-operation-v1" || result.TaskId != saved.Plan.Id
+                || result.RunId != runId || result.Mode != mode || result.Status is not ("inspected" or "exported_unverified" or "partial" or "unity_prepared"))
                 throw new InvalidDataException("对象结果不属于本次执行或状态不正确。");
             if (result.InventoryPath == null) throw new InvalidDataException("缺少对象列表路径。");
             _ = ReadInventory(saved, result.InventoryPath);
@@ -82,14 +83,26 @@ public sealed class ObjectWorkflow
             if (!process.HasExited) { process.Kill(true); await process.WaitForExitAsync(); }
             await stderr;
             ObjectOperationResult? result = null;
-            try { result = ReadResult(saved); } catch (Exception ex) { log.WriteLine(ex.Message); }
+            try { if (File.Exists(Path.Combine(run, "operation.json"))) result = JsonFiles.Read<ObjectOperationResult>(Path.Combine(run, "operation.json")); }
+            catch (Exception ex) { log.WriteLine(ex.Message); }
             if (!accepted && result != null && result.RunId == runId
-                && result.Status is ("running" or "inspected" or "exported_unverified" or "partial"))
+                && result.Status is ("running" or "inspected" or "exported_unverified" or "partial" or "unity_prepared"))
             {
                 result = result with { Status = token.IsCancellationRequested ? "cancelled" : "failed",
                     Message = token.IsCancellationRequested ? "对象操作已取消，保留本次记录。" : error ?? "对象操作中断或输出检查未通过。" };
                 JsonFiles.Write(Path.Combine(run, "operation.json"), result);
-                JsonFiles.Write(Path.Combine(task, "objects", "result.json"), result);
+                try
+                {
+                    using var taskLock = new FileStream(Path.Combine(task, "extraction.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
+                    taskLock.Lock(0, 1);
+                    try
+                    {
+                        if (ReadResult(saved)?.RunId == runId) JsonFiles.Write(Path.Combine(task, "objects", "result.json"), result);
+                        if (mode == "prepare" && ReadPreparation(saved)?.RunId == runId) JsonFiles.Write(Path.Combine(task, "objects", "preparation.json"), result);
+                    }
+                    finally { taskLock.Unlock(0, 1); }
+                }
+                catch (Exception ex) when (ex is IOException or InvalidDataException) { log.WriteLine("本次运行状态已保存；共享状态未更新：" + ex.Message); }
             }
         }
     }
@@ -100,6 +113,16 @@ public sealed class ObjectWorkflow
         if (!File.Exists(path)) return null;
         var result = JsonFiles.Read<ObjectOperationResult>(path);
         if (result.Schema != "endfield-object-operation-v1" || result.TaskId != saved.Plan.Id) throw new InvalidDataException("对象结果归属无效。");
+        return result;
+    }
+
+    public static ObjectOperationResult? ReadPreparation(SavedPlan saved)
+    {
+        var path = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "objects", "preparation.json");
+        if (!File.Exists(path)) return null;
+        var result = JsonFiles.Read<ObjectOperationResult>(path);
+        if (result.Schema != "endfield-object-operation-v1" || result.TaskId != saved.Plan.Id || result.Mode != "prepare")
+            throw new InvalidDataException("适配包记录归属无效。");
         return result;
     }
 

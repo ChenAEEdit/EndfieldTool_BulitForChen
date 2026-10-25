@@ -138,7 +138,7 @@ public sealed record BundleExtractionResult
     public int ReusedFiles { get; init; }
     public string BundleExtraction { get; init; } = "running";
     public string ObjectDecoding { get; init; } = "not_run";
-    public string AnimationAdaptation { get; init; } = "not_implemented";
+    public string AnimationAdaptation { get; init; } = "not_run";
     public string Weights { get; init; } = "not_run";
     public string UnityPreview { get; init; } = "not_run";
     public string PlaybackVerification { get; init; } = "not_run";
@@ -179,7 +179,20 @@ public sealed record ObjectInventory
     public List<BundleObjectRow> Objects { get; init; } = [];
 }
 
-public sealed record ObjectExportSelection(string? ModelKey, string? AvatarKey, List<string> ClipKeys);
+public sealed record AnimationPreparationOptions
+{
+    public decimal ModelImportScale { get; init; } = 1;
+    public decimal PositionScale { get; init; } = 1;
+    public bool DropUnmatched { get; init; }
+    public bool DropSceneTranslation { get; init; } = true;
+    public bool ForceLoop { get; init; }
+    public string NormalizeRoot { get; init; } = "";
+    public List<string> ExcludedDescendants { get; init; } = [];
+    public List<string> ExcludedNodes { get; init; } = [];
+}
+
+public sealed record ObjectExportSelection(string? ModelKey, string? AvatarKey, List<string> ClipKeys,
+    AnimationPreparationOptions? Adaptation = null);
 
 public sealed record ObjectOutputFile
 {
@@ -202,6 +215,11 @@ public sealed record ObjectOperationResult
     public string Message { get; init; } = "";
     public string? InventoryPath { get; init; }
     public string OutputDirectory { get; init; } = "";
+    public string? UnityPackageDirectory { get; init; }
+    public string? UnityAssetRoot { get; init; }
+    public string? UnityConfigSha256 { get; init; }
+    public int ExpectedAdaptedClips { get; init; }
+    public string? UnityReportPath { get; init; }
     public bool Adapted { get; init; }
     public bool PlaybackVerified { get; init; }
     public List<ObjectOutputFile> Files { get; init; } = [];

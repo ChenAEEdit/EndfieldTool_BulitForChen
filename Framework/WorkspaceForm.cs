@@ -47,7 +47,7 @@ internal sealed partial class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 对象导出预览 0.6.1";
+        Text = "终末地角色工作台 · 动画适配预览 0.7.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
@@ -82,6 +82,7 @@ internal sealed partial class WorkspaceForm : Form
         BuildSettingsPage(settings);
         BuildScanPage();
         BuildObjectsPage();
+        BuildAnimationPage();
         search.TextChanged += (_, _) => { searchTimer.Stop(); searchTimer.Start(); };
         searchTimer.Tick += (_, _) => { searchTimer.Stop(); RefreshCharacters(); };
         characters.SelectedIndexChanged += (_, _) => SelectCharacter();
@@ -536,6 +537,8 @@ internal sealed partial class WorkspaceForm : Form
             {
                 var bundle = BundleExtractionBackend.ReadResult(saved);
                 var objects = ObjectWorkflow.ReadResult(saved);
+                var prepared = ObjectWorkflow.ReadPreparation(saved);
+                if (prepared?.BundleRunId == bundle?.RunId && prepared?.Status is ("unity_prepared" or "adapted_unverified")) objects = prepared;
                 row.SubItems.Add(bundle?.Status == "bundles_extracted" && objects != null && objects.BundleRunId == bundle.RunId
                     ? ObjectStatus(objects.Status) : ResultStatus(bundle?.Status));
             }
@@ -552,8 +555,11 @@ internal sealed partial class WorkspaceForm : Form
         try
         {
             var result = BundleExtractionBackend.ReadResult(saved);
+            var objects = ObjectWorkflow.ReadResult(saved);
+            var prepared = ObjectWorkflow.ReadPreparation(saved);
             taskDetails.Text = (result == null ? "尚无执行结果。\r\n" : DescribeResult(result))
-                + DescribeObjectResult(ObjectWorkflow.ReadResult(saved))
+                + DescribeObjectResult(objects)
+                + (prepared != null && prepared.RunId != objects?.RunId ? "\r\n独立适配包记录：" + DescribeObjectResult(prepared) : "")
                 + "\r\n计划文件：" + saved.FilePath + "\r\n\r\n" + Describe(saved.Plan);
         }
         catch (Exception error) { taskDetails.Text = "结果记录无法读取：" + error.Message; }
@@ -653,7 +659,7 @@ internal sealed partial class WorkspaceForm : Form
         + $"选中 {plan.RequestedResourceIds.Count} 项；包含已收录模型／Avatar 后 {plan.Resources.Count} 项；Bundle 依赖展开后 {plan.Bundles.Count} 个。\r\n\r\n资源：\r\n"
         + string.Join("\r\n", plan.Resources.Select(resource => $"  [{KindText(resource.Kind)}] {resource.Name}"))
         + "\r\n\r\n执行阶段：\r\n" + string.Join("\r\n", plan.Stages.Select(stage => $"  {stage.Name}：{StateText(stage.State)}"))
-        + "\r\n\r\nBundle 提取完成后，在任务记录中解析对象，再选择导出 FBX／原始动画；Unity 适配与播放验证尚未接入。";
+        + "\r\n\r\nBundle 完成后解析对象，选择导出 FBX／原始动画；动画适配页可生成独立包并回读 Unity 原生结果。实际播放验证尚未自动接入。";
 
     private void RunAction(Action action)
     {

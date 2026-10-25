@@ -36,6 +36,7 @@ internal sealed partial class WorkspaceForm
         foreach (var button in new[] {
             ActionButton("选择任务 →", () => pages.SelectedIndex = 2),
             ActionButton("载入已有对象列表", () => RunAction(LoadSavedObjects)), exportObjects,
+            ActionButton("动画适配 →", () => pages.SelectedIndex = 6),
             ActionButton("打开导出目录", () => RunAction(() =>
             {
                 var result = CurrentObjectResult();
@@ -88,6 +89,7 @@ internal sealed partial class WorkspaceForm
             if (linked != null)
                 for (int i = 1; i < avatarChoice.Items.Count; i++)
                     if ((avatarChoice.Items[i] as ObjectChoice)?.Row?.Key == linked) avatarChoice.SelectedIndex = i;
+            UpdateAdaptationDefaults();
         };
         objectRows.SelectedIndexChanged += (_, _) =>
         {
@@ -110,6 +112,7 @@ internal sealed partial class WorkspaceForm
         foreach (var control in objectActions) control.Enabled = enabled;
         // Preserve selections while an operation runs, but prevent edits during execution.
         pages.TabPages[5].Enabled = enabled;
+        pages.TabPages[6].Enabled = enabled;
     }
 
     private void LoadSavedObjects()
@@ -178,8 +181,11 @@ internal sealed partial class WorkspaceForm
         ? throw new InvalidDataException("请先载入任务的对象列表。")
         : ObjectWorkflow.ReadResult(inventoryTask) ?? throw new InvalidDataException("缺少对象操作结果。");
 
-    private async Task RunObjectOperationAsync(bool export)
+    private Task RunObjectOperationAsync(bool export) => RunWorkflowAsync(export ? "export" : "inspect");
+
+    private async Task RunWorkflowAsync(string mode)
     {
+        bool export = mode != "inspect", prepare = mode == "prepare";
         if (scanCancellation != null || extractionCancellation != null) return;
         SavedPlan saved;
         ObjectExportSelection? selection = null;
@@ -189,8 +195,10 @@ internal sealed partial class WorkspaceForm
             if (export)
             {
                 selection = new((modelChoice.SelectedItem as ObjectChoice)?.Row?.Key,
-                    (avatarChoice.SelectedItem as ObjectChoice)?.Row?.Key, checkedClips.Order().ToList());
+                    (avatarChoice.SelectedItem as ObjectChoice)?.Row?.Key, checkedClips.Order().ToList(), prepare ? AdaptationOptions() : null);
                 if (selection.ModelKey == null && selection.ClipKeys.Count == 0) throw new InvalidDataException("请选择模型根节点或勾选动画。");
+                if (prepare && (selection.ModelKey == null || selection.AvatarKey == null || selection.ClipKeys.Count == 0))
+                    throw new InvalidDataException("生成适配包需要选择模型、Avatar 和至少一条动画。");
             }
             else if (BundleExtractionBackend.ReadResult(saved)?.Status != "bundles_extracted")
                 throw new InvalidDataException("请先完成该任务的 Bundle 提取。");
@@ -214,12 +222,13 @@ internal sealed partial class WorkspaceForm
                 if (scanLog.TextLength > 150000) scanLog.Text = scanLog.Text[^75000..];
                 scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
             });
-            var result = await objectWorkflow.ExecuteAsync(saved, export ? "export" : "inspect", objectInventoryPath, selection, progress, cancellation.Token);
+            var result = await objectWorkflow.ExecuteAsync(saved, mode, objectInventoryPath, selection, progress, cancellation.Token);
             scanProgress.Value = 100;
             if (!export) LoadObjects(saved, result.InventoryPath!);
             objectDetails.Text = DescribeObjectResult(result);
             status.Text = result.Status == "partial" ? "部分导出失败，请查看对象报告。" : result.Message;
-            pages.SelectedIndex = 5;
+            pages.SelectedIndex = prepare ? 6 : 5;
+            if (prepare) adaptationDetails.Text = DescribeObjectResult(result) + "\r\n适配包：" + result.UnityPackageDirectory;
         }
         catch (OperationCanceledException) { status.Text = "对象操作已取消；本次记录保留，重新执行会建立新的运行目录。"; }
         catch (Exception error) { status.Text = "对象操作未完成：" + error.Message; }
@@ -253,6 +262,8 @@ internal sealed partial class WorkspaceForm
     {
         "inspected" => "对象已解析 · 待选择",
         "exported_unverified" => "已导出 · 未适配／验证",
+        "unity_prepared" => "适配包已准备 · 待 Unity 生成",
+        "adapted_unverified" => "已适配 · 未验证播放",
         "partial" => "部分导出失败",
         "running" => "对象处理中／中断待重试",
         "cancelled" => "对象操作已取消",

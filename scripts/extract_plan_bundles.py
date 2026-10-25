@@ -181,7 +181,7 @@ def main():
         "status": "running", "message": "正在核对版本与依赖。", "startedAt": timestamp(),
         "outputDirectory": str(task_dir / "bundles"), "totalBundles": 0, "files": [],
         "reusedFiles": 0, "extractedFiles": 0, "bundleExtraction": "running",
-        "objectDecoding": "not_run", "animationAdaptation": "not_implemented",
+        "objectDecoding": "not_run", "animationAdaptation": "not_run",
         "weights": "not_run", "unityPreview": "not_run", "playbackVerification": "not_run"})
     publish()
     emit("核对提取计划与当前游戏版本…", 1)

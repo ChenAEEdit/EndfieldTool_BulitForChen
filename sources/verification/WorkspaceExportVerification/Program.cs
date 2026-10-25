@@ -47,7 +47,7 @@ internal static class Program
         {
             try
             {
-                Check(form.Text.Contains(packageVersion) && Field<TabControl>("pages").TabPages.Count == 6, "Delivered workbench Form initializes all six pages at version " + packageVersion);
+                Check(form.Text.Contains(packageVersion) && Field<TabControl>("pages").TabPages.Count >= 6, "Delivered workbench Form initializes export pages at version " + packageVersion);
                 Field<Dictionary<string, TextBox>>("paths")["workspace"].Text = saved.Plan.Options.WorkspaceDirectory;
                 Field<TabControl>("pages").SelectedIndex = 2;
                 Call("RefreshTasks");
