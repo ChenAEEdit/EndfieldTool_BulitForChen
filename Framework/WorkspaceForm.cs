@@ -10,6 +10,8 @@ internal sealed class WorkspaceForm : Form
     private static readonly Color Accent = Color.FromArgb(33, 100, 116);
     private readonly TabControl pages = new() { Dock = DockStyle.Fill };
     private readonly TextBox search = new() { Dock = DockStyle.Fill, PlaceholderText = "搜索角色名称、代码或资源路径" };
+    private readonly TextBox resourceSearch = new() { Dock = DockStyle.Fill, PlaceholderText = "筛选资源名称或路径，例如 idle、walk；隐藏的勾选仍计入计划" };
+    private readonly HashSet<string> checkedResourceIds = new(StringComparer.Ordinal);
     private readonly ListView characters = List("角色", "代码");
     private readonly CheckedListBox resources = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
     private readonly TextBox resourceDetails = ReadOnlyText();
@@ -24,12 +26,23 @@ internal sealed class WorkspaceForm : Form
     private readonly CheckBox verifyPlayback = new() { Text = "检查实际播放", AutoSize = true };
     private readonly WorkspaceStore store = new();
     private readonly ITaskPlanner planner = new TaskPlanner();
+    private readonly IGameResourceIndexer indexer = new GameResourceIndexer();
+    private readonly Button scan = new() { Text = "扫描游戏资源", Width = 145, Height = 35 };
+    private readonly Button stopScan = new() { Text = "取消扫描", Width = 95, Height = 35, Enabled = false };
+    private readonly CheckBox forceScan = new() { Text = "重新扫描", AutoSize = true };
+    private readonly ProgressBar scanProgress = new() { Dock = DockStyle.Fill, Maximum = 100 };
+    private readonly TextBox scanLog = ReadOnlyText();
+    private readonly List<Control> catalogActions = [];
+    private readonly System.Windows.Forms.Timer searchTimer = new() { Interval = 250 };
+    private CancellationTokenSource? scanCancellation;
+    private string? latestIndexReport;
+    private bool updatePlanQueued, closeAfterScan, loadingResources;
     private ResourceCatalog? catalog;
     private CharacterEntry? selectedCharacter;
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 框架预览 0.2.0";
+        Text = "终末地角色工作台 · 资源发现预览 0.3.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
@@ -41,7 +54,7 @@ internal sealed class WorkspaceForm : Form
         layout.Padding = new Padding(18);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 63));
         var header = new Panel { Dock = DockStyle.Fill };
         header.Controls.Add(new Label { Text = "终末地角色工作台", AutoSize = true,
             Font = new Font(Font.FontFamily, 23, FontStyle.Bold), Location = new Point(0, 0) });
@@ -49,7 +62,12 @@ internal sealed class WorkspaceForm : Form
             ForeColor = Color.DimGray, Location = new Point(3, 48) });
         layout.Controls.Add(header, 0, 0);
         layout.Controls.Add(pages, 0, 1);
-        layout.Controls.Add(status, 0, 2);
+        var footer = Grid(1, 2);
+        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 14));
+        footer.Controls.Add(status, 0, 0);
+        footer.Controls.Add(scanProgress, 0, 1);
+        layout.Controls.Add(footer, 0, 2);
         Controls.Add(layout);
 
         var settings = LoadSettings();
@@ -57,12 +75,23 @@ internal sealed class WorkspaceForm : Form
         BuildPlanPage();
         BuildTasksPage();
         BuildSettingsPage(settings);
-        search.TextChanged += (_, _) => RefreshCharacters();
+        BuildScanPage();
+        search.TextChanged += (_, _) => { searchTimer.Stop(); searchTimer.Start(); };
+        searchTimer.Tick += (_, _) => { searchTimer.Stop(); RefreshCharacters(); };
         characters.SelectedIndexChanged += (_, _) => SelectCharacter();
         resources.SelectedIndexChanged += (_, _) => ShowResource();
-        resources.ItemCheck += (_, _) =>
+        resourceSearch.TextChanged += (_, _) => PopulateResources();
+        resources.ItemCheck += (_, e) =>
         {
-            if (IsHandleCreated) BeginInvoke(new Action(UpdatePlan));
+            if (loadingResources) return;
+            var entry = ((ResourceChoice)resources.Items[e.Index]).Entry;
+            if (e.NewValue == CheckState.Checked) checkedResourceIds.Add(entry.Id);
+            else checkedResourceIds.Remove(entry.Id);
+            if (IsHandleCreated && !updatePlanQueued)
+            {
+                updatePlanQueued = true;
+                BeginInvoke(new Action(() => { updatePlanQueued = false; UpdatePlan(); }));
+            }
         };
         tasks.SelectedIndexChanged += (_, _) => ShowTask();
         foreach (var box in paths.Values) box.TextChanged += (_, _) => UpdatePlan();
@@ -75,6 +104,17 @@ internal sealed class WorkspaceForm : Form
             UpdatePlan();
         };
         verifyPlayback.Enabled = importUnity.Checked;
+        scan.Click += async (_, _) => await ScanGameAsync();
+        stopScan.Click += (_, _) => scanCancellation?.Cancel();
+        FormClosing += (_, e) =>
+        {
+            if (scanCancellation == null) return;
+            e.Cancel = true;
+            closeAfterScan = true;
+            scanCancellation.Cancel();
+            status.Text = "正在停止扫描并关闭，已完成的缓存保留。";
+        };
+        FormClosed += (_, _) => searchTimer.Dispose();
         RunAction(LoadSupportedCatalog);
     }
 
@@ -86,11 +126,18 @@ internal sealed class WorkspaceForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(Note("框架阶段：当前只读取已支持的角色配置或导入的索引。游戏全量扫描与通用提取尚未接入。"), 0, 0);
+        layout.Controls.Add(Note("可扫描本机游戏的角色／动作名称候选。名称候选尚未确认骨架或完成解码；压缩、加密资源可能漏项。"), 0, 0);
         var tools = Flow();
-        tools.Controls.Add(ActionButton("加载已支持角色", () => RunAction(LoadSupportedCatalog)));
-        tools.Controls.Add(ActionButton("导入资源索引…", () => RunAction(ImportCatalog)));
-        tools.Controls.Add(ActionButton("另存资源索引…", () => RunAction(ExportCatalog)));
+        foreach (var button in new[] {
+            ActionButton("加载已支持角色", () => RunAction(LoadSupportedCatalog)),
+            ActionButton("导入索引…", () => RunAction(ImportCatalog)),
+            ActionButton("另存索引…", () => RunAction(ExportCatalog)) })
+        {
+            button.Width = 135;
+            tools.Controls.Add(button);
+            catalogActions.Add(button);
+        }
+        tools.Controls.AddRange([scan, stopScan, forceScan]);
         layout.Controls.Add(tools, 0, 1);
         var searchRow = Grid(2, 1);
         searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
@@ -105,20 +152,97 @@ internal sealed class WorkspaceForm : Form
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
         characters.Margin = new Padding(0, 0, 12, 0);
         body.Controls.Add(characters, 0, 0);
-        var right = Grid(1, 3);
+        var right = Grid(1, 4);
         right.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        right.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         right.RowStyles.Add(new RowStyle(SizeType.Absolute, 161));
         var choices = Flow();
-        choices.Controls.Add(ActionButton("全选资源", () => SetChecks(true)));
-        choices.Controls.Add(ActionButton("取消勾选", () => SetChecks(false)));
+        choices.Controls.Add(ActionButton("全选当前列表", () => SetChecks(true)));
+        choices.Controls.Add(ActionButton("取消当前勾选", () => SetChecks(false)));
         choices.Controls.Add(ActionButton("查看提取计划 →", () => { UpdatePlan(); pages.SelectedIndex = 1; }));
         right.Controls.Add(choices, 0, 0);
-        right.Controls.Add(resources, 0, 1);
-        right.Controls.Add(resourceDetails, 0, 2);
+        right.Controls.Add(resourceSearch, 0, 1);
+        right.Controls.Add(resources, 0, 2);
+        right.Controls.Add(resourceDetails, 0, 3);
         body.Controls.Add(right, 1, 0);
         layout.Controls.Add(body, 0, 3);
         page.Controls.Add(layout);
+    }
+
+    private void BuildScanPage()
+    {
+        var page = Page("扫描记录");
+        var layout = Grid(1, 3);
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        layout.Controls.Add(Note("扫描只读游戏文件；工作区保存索引、清单与可续扫缓存。取消后当前文件需重新扫描，之前完成的文件可以复用。"), 0, 0);
+        layout.Controls.Add(scanLog, 0, 1);
+        var actions = Flow();
+        actions.Controls.Add(ActionButton("打开本次索引报告", () => RunAction(() =>
+        {
+            if (latestIndexReport == null) throw new InvalidDataException("本次还没有完成的索引报告。");
+            OpenLocal(latestIndexReport);
+        })));
+        actions.Controls.Add(ActionButton("返回资源列表", () => pages.SelectedIndex = 0));
+        layout.Controls.Add(actions, 0, 2);
+        page.Controls.Add(layout);
+    }
+
+    private async Task ScanGameAsync()
+    {
+        if (scanCancellation != null) return;
+        var options = CurrentOptions();
+        var force = forceScan.Checked;
+        using var cancellation = new CancellationTokenSource();
+        scanCancellation = cancellation;
+        scan.Enabled = forceScan.Enabled = false;
+        stopScan.Enabled = true;
+        foreach (var action in catalogActions) action.Enabled = false;
+        pages.TabPages[3].Enabled = false;
+        scanProgress.Value = 0;
+        scanLog.Clear();
+        latestIndexReport = null;
+        pages.SelectedIndex = 4;
+        try
+        {
+            var progress = new Progress<IndexProgress>(row =>
+            {
+                if (IsDisposed || !ReferenceEquals(scanCancellation, cancellation) || cancellation.IsCancellationRequested) return;
+                status.Text = row.Message;
+                scanProgress.Value = row.Percent;
+                if (scanLog.TextLength > 150000) scanLog.Text = scanLog.Text[^75000..];
+                scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
+            });
+            var result = await indexer.BuildAsync(options, force, progress, cancellation.Token);
+            catalog = result.Catalog;
+            latestIndexReport = result.ReportPath;
+            search.Clear();
+            RefreshCharacters();
+            status.Text = $"索引已完成：{catalog.Characters.Count} 个角色名称候选；尚未解码、适配或验证。";
+            scanLog.AppendText($"\r\n索引：{result.CatalogPath}\r\n报告：{result.ReportPath}\r\n日志：{result.LogPath}\r\n{catalog.CoverageNote}\r\n");
+            pages.SelectedIndex = 0;
+        }
+        catch (OperationCanceledException)
+        {
+            status.Text = "扫描已取消；保留已完成缓存，再次扫描可继续。";
+            scanLog.AppendText(status.Text + Environment.NewLine);
+        }
+        catch (Exception error)
+        {
+            status.Text = "索引未完成：" + error.Message;
+            scanLog.AppendText(status.Text + Environment.NewLine);
+        }
+        finally
+        {
+            scanCancellation = null;
+            scan.Enabled = forceScan.Enabled = true;
+            stopScan.Enabled = false;
+            foreach (var action in catalogActions) action.Enabled = true;
+            pages.TabPages[3].Enabled = true;
+            if (closeAfterScan) BeginInvoke(new Action(Close));
+        }
     }
 
     private void BuildPlanPage()
@@ -274,6 +398,7 @@ internal sealed class WorkspaceForm : Form
     private void RefreshCharacters()
     {
         selectedCharacter = null;
+        checkedResourceIds.Clear();
         resources.Items.Clear();
         characters.Items.Clear();
         resourceDetails.Clear();
@@ -284,7 +409,7 @@ internal sealed class WorkspaceForm : Form
             item.SubItems.Add(character.Id);
             characters.Items.Add(item);
         }
-        catalogInfo.Text = $"版本 {catalog.GameBuild}\n当前 {characters.Items.Count} / {catalog.Characters.Count} 个角色 · 配置／索引数据";
+        catalogInfo.Text = $"版本 {catalog.GameBuild}\n当前 {characters.Items.Count} / {catalog.Characters.Count} 个角色 · 配置／名称候选";
         if (characters.Items.Count > 0) characters.Items[0].Selected = true;
         UpdatePlan();
     }
@@ -292,12 +417,28 @@ internal sealed class WorkspaceForm : Form
     private void SelectCharacter()
     {
         selectedCharacter = characters.SelectedItems.Count == 0 ? null : (CharacterEntry)characters.SelectedItems[0].Tag!;
+        checkedResourceIds.Clear();
+        if (selectedCharacter != null)
+            foreach (var resource in selectedCharacter.Resources.Where(resource => resource.Association == AssociationKind.Configured))
+                checkedResourceIds.Add(resource.Id);
+        PopulateResources();
+        UpdatePlan();
+    }
+
+    private void PopulateResources()
+    {
+        loadingResources = true;
         resources.Items.Clear();
         resourceDetails.Clear();
+        resources.BeginUpdate();
         if (selectedCharacter != null)
-            foreach (var resource in selectedCharacter.Resources) resources.Items.Add(new ResourceChoice(resource), true);
+            foreach (var resource in selectedCharacter.Resources.Where(resource =>
+                resource.Name.Contains(resourceSearch.Text, StringComparison.OrdinalIgnoreCase)
+                || resource.SourcePath.Contains(resourceSearch.Text, StringComparison.OrdinalIgnoreCase)))
+                resources.Items.Add(new ResourceChoice(resource), checkedResourceIds.Contains(resource.Id));
+        resources.EndUpdate();
+        loadingResources = false;
         if (resources.Items.Count > 0) resources.SelectedIndex = 0;
-        UpdatePlan();
     }
 
     private void ShowResource()
@@ -306,11 +447,11 @@ internal sealed class WorkspaceForm : Form
         var resource = choice.Entry;
         resourceDetails.Text = $"{resource.Name}\r\n类型：{KindText(resource.Kind)}    播放方式：{resource.Rig}\r\n"
             + $"配置路径：{resource.SourcePath}\r\n依赖 Bundle：{resource.BundleIds.Count} 个\r\n"
-            + "状态：已收录；未在本次工作台执行解码、适配或验证。\r\n"
-            + $"来源：{catalog?.SourceDescription}";
+            + $"关联：{(resource.Association == AssociationKind.NameCandidate ? "名称候选，尚未确认对象和骨架" : "已支持的配置")}；未在本次工作台解码、适配或验证。\r\n"
+            + $"依据：{resource.Evidence}\r\n来源：{catalog?.SourceDescription}\r\n{catalog?.CoverageNote}";
     }
 
-    private List<string> SelectedIds() => resources.CheckedItems.Cast<ResourceChoice>().Select(item => item.Entry.Id).ToList();
+    private List<string> SelectedIds() => checkedResourceIds.ToList();
 
     private void SetChecks(bool value)
     {
@@ -365,7 +506,7 @@ internal sealed class WorkspaceForm : Form
     private static string Describe(ExtractionPlan plan) =>
         $"角色：{plan.CharacterName} ({plan.CharacterId})\r\n游戏版本：{plan.GameBuild}\r\n"
         + $"状态：仅计划，未执行\r\n输出工作区：{plan.Options.WorkspaceDirectory}\r\n"
-        + $"选中 {plan.RequestedResourceIds.Count} 项；包含模型／Avatar 依赖后 {plan.Resources.Count} 项；Bundle 去重后 {plan.Bundles.Count} 个。\r\n\r\n资源：\r\n"
+        + $"选中 {plan.RequestedResourceIds.Count} 项；包含已收录模型／Avatar 后 {plan.Resources.Count} 项；Bundle 依赖展开后 {plan.Bundles.Count} 个。\r\n\r\n资源：\r\n"
         + string.Join("\r\n", plan.Resources.Select(resource => $"  [{KindText(resource.Kind)}] {resource.Name}"))
         + "\r\n\r\n执行阶段：\r\n" + string.Join("\r\n", plan.Stages.Select(stage => $"  {stage.Name}：{StateText(stage.State)}"))
         + "\r\n\r\n通用执行器待接入；保存后不会启动游戏解析器、Blender 或 Unity。";
@@ -418,6 +559,6 @@ internal sealed class WorkspaceForm : Form
     }
     private sealed record ResourceChoice(ResourceEntry Entry)
     {
-        public override string ToString() => $"[{KindText(Entry.Kind)}] {Entry.Name} · 已收录";
+        public override string ToString() => $"[{KindText(Entry.Kind)}] {Entry.Name} · {(Entry.Association == AssociationKind.NameCandidate ? "名称候选" : "已收录")}";
     }
 }

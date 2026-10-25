@@ -10,4 +10,6 @@
 
 `sources/gui` 保存图形界面源码，`pipeline.py` 保存流水线源码，`sources/exporters` 保存本机适配的导出器源码，`sources/patches` 保存上游集成补丁。
 
+0.3.0 的 `scripts/endfield_manifest.py` 复用本机 ZMD_unpack 工作副本中的严格 Bundle 表／依赖解析器；`scripts/endfield_vfs.py` 仍为原 VFS 读取器。新增发现脚本、界面索引服务及 Brotli 辅助入口保存在本地 Git 仓库与运行包源码中，沿用现有第三方来源和许可证文件。
+
 依赖源码的版本信息、原项目地址和许可证用于追溯。本地工具包仅含工具与依赖，游戏资产在运行后写入用户指定的独立工作区。

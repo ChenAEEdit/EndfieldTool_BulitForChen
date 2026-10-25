@@ -65,12 +65,10 @@ public static class CatalogService
     public static IReadOnlyList<CharacterEntry> Search(ResourceCatalog catalog, string query)
     {
         var terms = query.Split(' ', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        return catalog.Characters.Where(character =>
-        {
-            var text = string.Join('\n', new[] { character.Id, character.DisplayName, character.RootName }
-                .Concat(character.Resources.SelectMany(resource => new[] { resource.Name, resource.SourcePath })));
-            return terms.All(term => text.Contains(term, StringComparison.OrdinalIgnoreCase));
-        }).ToList();
+        return catalog.Characters.Where(character => terms.All(term =>
+            new[] { character.Id, character.DisplayName, character.RootName }.Any(value => value?.Contains(term, StringComparison.OrdinalIgnoreCase) == true)
+            || character.Resources.Any(resource => resource.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+                || resource.SourcePath?.Contains(term, StringComparison.OrdinalIgnoreCase) == true))).ToList();
     }
 
     public static void Validate(ResourceCatalog catalog)
@@ -87,6 +85,11 @@ public static class CatalogService
             Require(bundles.Add(bundle!.Id), "Bundle 标识重复：" + bundle.Id);
             Require(!string.IsNullOrWhiteSpace(bundle.Group) && Hex(bundle.Md5, 32), "Bundle 分组或 MD5 无效。");
         }
+        foreach (var bundle in catalog.Bundles!)
+        {
+            Require(bundle.DependencyIds != null && bundle.MissingDependencyNames != null, "Bundle 依赖列表不能为 null。");
+            Require(bundle.DependencyIds!.All(id => id != null && bundles.Contains(id)), "Bundle 依赖引用不存在：" + bundle.Id);
+        }
         var characters = new HashSet<string>(StringComparer.Ordinal);
         var resourceIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var character in catalog.Characters!)
@@ -101,6 +104,8 @@ public static class CatalogService
                     && !string.IsNullOrWhiteSpace(resource.Name), "资源缺少标识或名称。");
                 Require(resourceIds.Add(resource!.Id), "资源标识重复：" + resource.Id);
                 Require(Enum.IsDefined(resource.Kind), "不支持这个资源类型。");
+                Require(Enum.IsDefined(resource.Association), "不支持这个资源关联类型。");
+                Require(resource.SourcePath != null, "资源路径不能为 null。");
                 Require(resource.BundleIds != null, "资源依赖列表不能为 null。");
                 Require(resource.BundleIds!.All(id => id != null && bundles.Contains(id)), "资源引用了不存在的 Bundle：" + resource.Name);
             }

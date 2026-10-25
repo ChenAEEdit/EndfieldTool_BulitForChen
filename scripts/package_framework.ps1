@@ -38,18 +38,29 @@ if (Test-Path -LiteralPath $packageRoot) {
 $compiledRoot = Join-Path (Split-Path -Parent $repoRoot) 'outputs\character_tool_framework\compiled'
 & dotnet build (Join-Path $repoRoot 'EndfieldChenTool.csproj') --no-restore --configuration Release --output $compiledRoot -p:UseSharedCompilation=false
 if ($LASTEXITCODE -ne 0) { throw '框架编译失败。' }
+$cryptoRoot = Join-Path (Split-Path -Parent $repoRoot) 'outputs\character_tool_framework\crypto'
+& dotnet build (Join-Path $repoRoot 'Crypto\VfsCrypto.csproj') --no-restore --configuration Release --output $cryptoRoot -p:UseSharedCompilation=false
+if ($LASTEXITCODE -ne 0) { throw '索引解码组件编译失败。' }
 
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.2.0-framework'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.3.0-discovery-preview'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 
 # Copy runtime dependencies from the known delivery. Preserve the original package.
 foreach ($name in @('pipeline.py', 'THIRD_PARTY.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination (Join-Path $packageRoot $name) -Force
 }
+Copy-Item -LiteralPath (Join-Path $repoRoot 'THIRD_PARTY.md') -Destination (Join-Path $packageRoot 'THIRD_PARTY.md') -Force
 foreach ($folder in @('profiles', 'runtime', 'templates', 'scripts', 'licenses', 'sources')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $folder) -Destination $packageRoot -Recurse -Force
 }
+foreach ($file in Get-ChildItem -LiteralPath $cryptoRoot -File) {
+    Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packageRoot ('runtime\crypto\' + $file.Name)) -Force
+}
+foreach ($file in @('index_game_resources.py', 'endfield_manifest.py')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $packageRoot ('scripts\' + $file)) -Force
+}
+Copy-Item -LiteralPath (Join-Path $repoRoot 'Crypto\Program.cs') -Destination (Join-Path $packageRoot 'sources\crypto\Program.cs') -Force
 foreach ($file in Get-ChildItem -LiteralPath $compiledRoot -File) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packageRoot $file.Name) -Force
 }

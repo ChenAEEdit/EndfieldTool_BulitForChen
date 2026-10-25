@@ -14,8 +14,8 @@ public static class JsonFiles
 
     public static T Read<T>(string path)
     {
-        if (new FileInfo(path).Length > 32 * 1024 * 1024)
-            throw new InvalidDataException("文件超过当前框架允许的 32 MB，请缩小索引或任务文件。");
+        if (new FileInfo(path).Length > 256 * 1024 * 1024)
+            throw new InvalidDataException("文件超过当前工作台允许的 256 MB，请缩小索引或任务文件。");
         return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Options)
             ?? throw new InvalidDataException("JSON 文件内容为空。");
     }
@@ -49,14 +49,22 @@ public sealed class TaskPlanner : ITaskPlanner
         if (options.ImportUnity && (string.IsNullOrWhiteSpace(options.UnityProject) || string.IsNullOrWhiteSpace(options.UnityEditor)))
             throw new InvalidDataException("生成 Unity 预览需要填写项目和编辑器路径。");
         var selected = character.Resources.Where(resource => requested.Contains(resource.Id)).ToList();
+        var candidates = selected.Any(resource => resource.Association == AssociationKind.NameCandidate);
         if (selected.Any(resource => resource.Kind == ResourceKind.Animation))
         {
-            if (!character.Resources.Any(resource => resource.Kind == ResourceKind.Model)
-                || !character.Resources.Any(resource => resource.Kind == ResourceKind.Avatar))
+            if (!candidates && (!character.Resources.Any(resource => resource.Kind == ResourceKind.Model)
+                || !character.Resources.Any(resource => resource.Kind == ResourceKind.Avatar)))
                 throw new InvalidDataException("当前角色缺少模型或 Avatar 元数据，尚不能生成动画预览提取计划。");
-            selected = selected.Concat(character.Resources.Where(resource => resource.Kind != ResourceKind.Animation)).DistinctBy(resource => resource.Id).ToList();
+            selected = selected.Concat(character.Resources.Where(resource => resource.Kind != ResourceKind.Animation
+                && (!candidates || resource.Association == AssociationKind.Configured))).DistinctBy(resource => resource.Id).ToList();
         }
         var dependencies = selected.SelectMany(resource => resource.BundleIds).ToHashSet(StringComparer.Ordinal);
+        var bundlesById = catalog.Bundles.ToDictionary(bundle => bundle.Id);
+        var pending = new Stack<string>(dependencies);
+        while (pending.TryPop(out var bundleId))
+            foreach (var dependency in bundlesById[bundleId].DependencyIds)
+                if (dependencies.Add(dependency)) pending.Push(dependency);
+        var missing = dependencies.Sum(id => bundlesById[id].MissingDependencyNames.Count);
         return new ExtractionPlan
         {
             CharacterId = character.Id, CharacterName = character.DisplayName,
@@ -66,7 +74,8 @@ public sealed class TaskPlanner : ITaskPlanner
             RequestedResourceIds = requested.Order().ToList(), Resources = selected,
             Bundles = catalog.Bundles.Where(bundle => dependencies.Contains(bundle.Id)).ToList(),
             Stages = [
-                new("版本与依赖校验", StageState.Pending, "执行时重新校验游戏摘要及依赖，配置不代表当前游戏已通过校验。"),
+                new("版本与依赖校验", StageState.Pending, $"执行时重新校验游戏摘要及依赖；当前有 {missing} 项缺失或不明确的依赖记录。"),
+                new("角色与骨架确认", candidates ? StageState.Pending : StageState.NotRequested, "明文名称候选必须先解析对象、根节点和 Avatar，不能直接视为已适配角色。"),
                 new("提取与解码", StageState.Pending, "通用提取执行器尚未接入，本次仅保存计划。"),
                 new("动画适配", selected.Any(resource => resource.Kind == ResourceKind.Animation) ? StageState.Pending : StageState.NotRequested, "按所选片段确认单位、路径和播放方式。"),
                 new("骨骼权重检查", options.CheckWeights ? StageState.Pending : StageState.NotRequested, "未运行检查。"),

@@ -1,6 +1,35 @@
 using System.Buffers.Binary;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.IO.Compression;
+
+if (args is ["--brotli", var compressed, var destination])
+{
+    var bytes = File.ReadAllBytes(compressed);
+    for (var prefix = 0; prefix < Math.Min(128, bytes.Length); prefix++)
+    {
+        try
+        {
+            using var source = new MemoryStream(bytes, prefix, bytes.Length - prefix, writable: false);
+            using var brotli = new BrotliStream(source, CompressionMode.Decompress);
+            using var decoded = new MemoryStream();
+            var buffer = new byte[1024 * 1024];
+            int count;
+            while ((count = brotli.Read(buffer)) > 0)
+            {
+                decoded.Write(buffer, 0, count);
+                if (decoded.Length > 512L * 1024 * 1024) throw new InvalidDataException("Manifest exceeds 512 MB.");
+                if (decoded.Length >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(decoded.GetBuffer()) != 0xFF11FF11)
+                    throw new InvalidDataException("Manifest magic mismatch.");
+            }
+            if (decoded.Length < 4) continue;
+            File.WriteAllBytes(destination, decoded.ToArray());
+            return 0;
+        }
+        catch (InvalidDataException) { }
+    }
+    throw new InvalidDataException("No supported Brotli manifest header found.");
+}
 
 // Same ChaCha20 (counter=1, 96-bit nonce) as the vendored VFS reader.
 if (args.Length != 2) return 2;

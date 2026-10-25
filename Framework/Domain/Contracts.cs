@@ -2,12 +2,16 @@ namespace EndfieldChenTool.Framework.Domain;
 
 public enum ResourceKind { Model, Avatar, Animation }
 public enum StageState { Pending, NotRequested, Completed, Failed, Unsupported }
+public enum AssociationKind { Configured, NameCandidate }
 
 public sealed record BundleReference
 {
     public required string Id { get; init; }
     public required string Group { get; init; }
     public required string Md5 { get; init; }
+    public string VirtualPath { get; init; } = "";
+    public List<string> DependencyIds { get; init; } = [];
+    public List<string> MissingDependencyNames { get; init; } = [];
 }
 
 public sealed record ResourceEntry
@@ -18,6 +22,8 @@ public sealed record ResourceEntry
     public string SourcePath { get; init; } = "";
     public string Rig { get; init; } = "Unknown";
     public string BackendKey { get; init; } = "";
+    public AssociationKind Association { get; init; }
+    public string Evidence { get; init; } = "";
     public List<string> BundleIds { get; init; } = [];
 }
 
@@ -41,6 +47,16 @@ public sealed record ResourceCatalog
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public List<BundleReference> Bundles { get; init; } = [];
     public List<CharacterEntry> Characters { get; init; } = [];
+    public string CoverageNote { get; init; } = "";
+}
+
+public sealed record IndexProgress(string Message, int Percent);
+public sealed record GameIndexResult(ResourceCatalog Catalog, string CatalogPath, string ReportPath, string LogPath);
+
+public interface IGameResourceIndexer
+{
+    Task<GameIndexResult> BuildAsync(WorkspaceOptions options, bool force, IProgress<IndexProgress> progress,
+        CancellationToken cancellationToken);
 }
 
 public sealed record WorkspaceOptions
