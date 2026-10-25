@@ -10,6 +10,11 @@ internal static class Program
     private static int Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        if (args.Length == 0 || args is ["--workspace"])
+        {
+            Application.Run(new Framework.WorkspaceForm());
+            return 0;
+        }
         using var form = new MainForm();
         if (args.Length == 2 && args[0] == "--smoke-test")
         {
