@@ -47,7 +47,7 @@ internal sealed partial class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 动画适配预览 0.7.0";
+        Text = "终末地角色工作台 · Unity 自动生成预览 0.8.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
@@ -344,7 +344,7 @@ internal sealed partial class WorkspaceForm : Form
         AddPath(table, 4, "Blender", "blender", options.Blender, true);
         layout.Controls.Add(table, 0, 1);
         var flags = Flow();
-        importUnity.Text = "Unity 预览（待接入）";
+        importUnity.Text = "自动创建播放场景（待接入）";
         checkWeights.Text = "权重检查（待接入）";
         verifyPlayback.Text = "播放检查（待接入）";
         importUnity.Checked = checkWeights.Checked = verifyPlayback.Checked = false;
@@ -367,7 +367,7 @@ internal sealed partial class WorkspaceForm : Form
         legacy.Enabled = File.Exists(Path.Combine(AppContext.BaseDirectory, "pipeline.py"));
         actions.Controls.Add(legacy);
         layout.Controls.Add(actions, 0, 3);
-        layout.Controls.Add(Note("陈千语提取窗口沿用原有独立设置与两条行走流程，不会接收工作台的任务计划。\n\n六条专属待机仍从现有 Unity 项目的 Assets/ChenIdle/Chen_Idle.unity 或 Endfield Chen Tool 菜单打开。\n\n工作台设置与原工具分开保存；生成任务时选择空目录或本工作台已创建的目录。"), 0, 4);
+        layout.Controls.Add(Note("“动画适配”页已提供独立的导入与生成按钮，使用已保存计划中的 Unity 项目和编辑器路径；这里修改路径仅影响以后建立的计划。\n\n陈千语提取窗口沿用独立设置和专用流程。六条专属待机仍可从现有项目 Assets/ChenIdle/Chen_Idle.unity 打开。\n\n工作台设置与原工具分开保存；生成任务时选择空目录或本工作台已创建的目录。"), 0, 4);
         page.Controls.Add(layout);
     }
 
@@ -541,8 +541,15 @@ internal sealed partial class WorkspaceForm : Form
                 if (prepared?.BundleRunId == bundle?.RunId && prepared?.Status is ("unity_prepared" or "adapted_unverified")) objects = prepared;
                 row.SubItems.Add(bundle?.Status == "bundles_extracted" && objects != null && objects.BundleRunId == bundle.RunId
                     ? ObjectStatus(objects.Status) : ResultStatus(bundle?.Status));
+                var generation = UnityAdaptationRunner.ReadLatest(saved);
+                if (generation != null && generation.SourceRunId == prepared?.RunId && prepared.BundleRunId == bundle?.RunId
+                    && generation.Status != "adapted_unverified") row.SubItems[2].Text = UnityGenerationStatus(generation.Status);
             }
-            catch (Exception) { row.SubItems.Add("结果记录无法读取"); }
+            catch (Exception)
+            {
+                if (row.SubItems.Count > 2) row.SubItems[2].Text = "结果记录无法读取";
+                else row.SubItems.Add("结果记录无法读取");
+            }
             tasks.Items.Add(row);
         }
         status.Text = $"读取了 {entries.Count} 条任务计划。";
@@ -557,13 +564,26 @@ internal sealed partial class WorkspaceForm : Form
             var result = BundleExtractionBackend.ReadResult(saved);
             var objects = ObjectWorkflow.ReadResult(saved);
             var prepared = ObjectWorkflow.ReadPreparation(saved);
+            var generation = UnityAdaptationRunner.ReadLatest(saved);
             taskDetails.Text = (result == null ? "尚无执行结果。\r\n" : DescribeResult(result))
                 + DescribeObjectResult(objects)
                 + (prepared != null && prepared.RunId != objects?.RunId ? "\r\n独立适配包记录：" + DescribeObjectResult(prepared) : "")
+                + (generation == null ? "" : "\r\n最近 Unity 导入／生成（来源包 " + generation.SourceRunId + "）：\r\n"
+                    + UnityGenerationStatus(generation.Status) + " · " + generation.Message + "\r\n项目：" + generation.Project
+                    + "\r\n日志：" + generation.LogPath + "\r\n复用已有结果：" + generation.Reused + "；已验证播放：" + generation.PlaybackVerified + "\r\n")
                 + "\r\n计划文件：" + saved.FilePath + "\r\n\r\n" + Describe(saved.Plan);
         }
         catch (Exception error) { taskDetails.Text = "结果记录无法读取：" + error.Message; }
     }
+
+    private static string UnityGenerationStatus(string value) => value switch
+    {
+        "running" => "Unity 处理中／中断待检查",
+        "failed" => "Unity 导入／生成失败 · 适配包保留",
+        "cancelled" => "Unity 导入／生成已取消",
+        "adapted_unverified" => "Unity 已生成 · 未验证播放",
+        _ => "Unity 操作状态未知"
+    };
 
     private SavedPlan SelectedTask() => tasks.SelectedItems.Count == 0
         ? throw new InvalidDataException("请先选择一个任务。") : (SavedPlan)tasks.SelectedItems[0].Tag!;

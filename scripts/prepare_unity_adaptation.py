@@ -53,7 +53,7 @@ def prepare_unity_package(state, selection, model, clips):
         copy(exported["output"], relative)
         definitions.append({"id": row["key"], "name": row["name"], "source": relative})
     config = {"schema": "endfield-unity-adaptation-config-v1", "taskId": state["result"]["taskId"],
-        "runId": state["result"]["runId"], "adapterVersion": "0.7.0", "modelKey": model["key"],
+        "runId": state["result"]["runId"], "adapterVersion": "0.8.0", "modelKey": model["key"],
         "model": "Model/" + Path(model_report["fbx"]).relative_to(run / "exports/model").as_posix(),
         "modelImportScale": rules["modelImportScale"],
         "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes")},
@@ -64,6 +64,9 @@ def prepare_unity_package(state, selection, model, clips):
     shutil.copy2(ROOT / "templates/workspace/CharacterAnimationAdapter.cs", editor / "CharacterAnimationAdapter.cs")
     (package / "使用说明.md").write_text(
         "# Unity 原生动画适配包\n\n"
+        "推荐：在工作台“动画适配”页点击“导入并生成适配”，工具使用计划中现有的 Unity 项目。"
+        "请先保存并关闭该项目的 Unity 编辑器；生成后自动核对本次回执与输出，仍需人工检查播放。\n\n"
+        "以下为手动操作方法：\n\n"
         "1. 将本目录的 Assets 内容复制到现有 Unity 项目的 Assets 下。\n"
         "2. 等待 Unity 导入和编译；选择 `" + asset_root + "/adaptation.json`。\n"
         "3. 执行菜单 Endfield Character Tool → 适配所选配置并生成预览 Prefab。\n"

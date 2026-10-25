@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.Animations;
 using UnityEditor.SceneManagement;
@@ -41,10 +42,52 @@ public static class CharacterAnimationAdapter
     [Serializable] public class OutputFile { public string path, sha256; public long bytes; }
     [Serializable] public class BuildReport
     {
-        public string schema = "endfield-unity-adaptation-v1", taskId, runId, configSha256, unityVersion, status, error;
+        public string schema = "endfield-unity-adaptation-v1", taskId, runId, configSha256, unityVersion, status, error, invocationId;
         public bool adapted, playbackVerified;
         public ClipReport[] clips;
         public OutputFile[] outputs;
+    }
+
+    [Serializable] public class BatchReceipt
+    {
+        public string schema = "endfield-unity-invocation-v1", invocationId, configPath, configSha256, error;
+        public bool succeeded;
+    }
+
+    // Invoked only by the desktop runner. A fresh receipt proves this method actually ran.
+    public static void BuildBatch()
+    {
+        string configPath = Environment.GetEnvironmentVariable("ENDFIELD_ADAPT_CONFIG");
+        string invocation = Environment.GetEnvironmentVariable("ENDFIELD_ADAPT_INVOCATION");
+        string receiptPath = Environment.GetEnvironmentVariable("ENDFIELD_ADAPT_RECEIPT");
+        var receipt = new BatchReceipt { invocationId = invocation, configPath = configPath };
+        int exitCode = 1;
+        try
+        {
+            Guid parsed;
+            if (!Application.isBatchMode || !Guid.TryParseExact(invocation, "N", out parsed)
+                || string.IsNullOrEmpty(receiptPath) || !Path.IsPathRooted(receiptPath) || File.Exists(receiptPath))
+                throw new Exception("批处理调用信息无效或回执已存在。");
+            receipt.configSha256 = Hash(configPath);
+            if (receipt.configSha256 != Environment.GetEnvironmentVariable("ENDFIELD_ADAPT_CONFIG_SHA256"))
+                throw new Exception("批处理配置摘要不符。");
+            Build(configPath, invocation);
+            receipt.succeeded = true; exitCode = 0;
+        }
+        catch (Exception error) { receipt.error = error.ToString(); Debug.LogException(error); }
+        finally
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(receiptPath) && Path.IsPathRooted(receiptPath))
+                {
+                    using (var stream = new FileStream(receiptPath, FileMode.CreateNew, FileAccess.Write))
+                    using (var writer = new StreamWriter(stream)) writer.Write(JsonUtility.ToJson(receipt, true));
+                }
+            }
+            catch (Exception error) { Debug.LogException(error); exitCode = 1; }
+            EditorApplication.Exit(exitCode);
+        }
     }
 
     [MenuItem("Endfield Character Tool/适配所选配置并生成预览 Prefab")]
@@ -139,22 +182,28 @@ public static class CharacterAnimationAdapter
         catch { UnityEngine.Object.DestroyImmediate(clip); throw; }
     }
 
-    public static void Build(string configPath)
+    public static void Build(string configPath, string invocationId = "")
     {
         configPath = configPath.Replace('\\', '/');
-        if (!configPath.StartsWith("Assets/EndfieldCharacterExports/", StringComparison.Ordinal) || Path.GetFileName(configPath) != "adaptation.json")
+        if (!Regex.IsMatch(configPath, "^Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32}/adaptation.json$"))
             throw new Exception("配置必须位于工具生成的 Assets/EndfieldCharacterExports 目录。");
         string basePath = Path.GetDirectoryName(configPath).Replace('\\', '/');
         var config = JsonUtility.FromJson<Config>(File.ReadAllText(configPath));
         if (config.schema != "endfield-unity-adaptation-config-v1" || config.clips == null || config.clips.Length == 0 || config.rules == null)
             throw new Exception("适配配置格式无效。");
+        Guid task;
+        if (!Guid.TryParse(config.taskId, out task) || !Guid.TryParseExact(config.runId, "N", out _)
+            || basePath != "Assets/EndfieldCharacterExports/" + task.ToString("N").Substring(0, 8) + "_" + config.runId)
+            throw new Exception("适配配置与目录归属不符。");
         var report = new BuildReport { taskId = config.taskId, runId = config.runId,
-            configSha256 = Hash(configPath), unityVersion = Application.unityVersion, status = "running" };
+            configSha256 = Hash(configPath), unityVersion = Application.unityVersion, status = "running", invocationId = invocationId };
         string generated = basePath + "/Generated", reportPath = generated + "/adaptation-result.json";
         Directory.CreateDirectory(generated);
-        if (Directory.GetFiles(generated).Any(path => Path.GetFileName(path) != "adaptation-result.json" && Path.GetExtension(path) != ".meta"))
+        if (Directory.EnumerateFileSystemEntries(generated).Any(path => Directory.Exists(path)
+            || Path.GetFileName(path) != "adaptation-result.json" && Path.GetExtension(path) != ".meta"))
             throw new Exception("本包已生成内容。请重新生成独立适配包，保留已有修改。");
         File.WriteAllText(reportPath, JsonUtility.ToJson(report, true));
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         var scene = EditorSceneManager.NewPreviewScene();
         var details = new List<ClipReport>(); var outputs = new List<string>();
         try
@@ -209,7 +258,7 @@ public static class CharacterAnimationAdapter
             report.status = report.adapted ? "adapted_unverified" : "partial";
             report.outputs = outputs.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
         }
-        catch (Exception error) { report.status = "failed"; report.error = error.ToString(); }
+        catch (Exception error) { report.adapted = false; report.status = "failed"; report.error = error.ToString(); }
         finally
         {
             report.clips = details.ToArray();
