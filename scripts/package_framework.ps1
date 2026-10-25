@@ -41,9 +41,30 @@ if ($LASTEXITCODE -ne 0) { throw '框架编译失败。' }
 $cryptoRoot = Join-Path (Split-Path -Parent $repoRoot) 'outputs\character_tool_framework\crypto'
 & dotnet build (Join-Path $repoRoot 'Crypto\VfsCrypto.csproj') --no-restore --configuration Release --output $cryptoRoot -p:UseSharedCompilation=false
 if ($LASTEXITCODE -ne 0) { throw '索引解码组件编译失败。' }
+$exporterBuilds = @{
+    'object-probe' = 'BundleObjectProbe'
+    'object-model' = 'ModelExportCompat'
+    'object-animation' = 'AnimationExportCompat'
+}
+foreach ($runtimeName in $exporterBuilds.Keys) {
+    $projectName = $exporterBuilds[$runtimeName]
+    $buildDirectory = Join-Path (Split-Path -Parent $repoRoot) ('outputs\character_tool_framework\' + $runtimeName)
+    & dotnet build (Join-Path $repoRoot ('sources\exporters\' + $projectName + '\' + $projectName + '.csproj')) `
+        --configuration Release --output $buildDirectory --configfile (Join-Path $repoRoot 'NuGet.Config') -p:UseSharedCompilation=false -warnaserror:MSB3277
+    if ($LASTEXITCODE -ne 0) { throw "对象组件编译失败：$projectName" }
+}
 
 # Check before copying any file; an open desktop application may lock its assembly.
-foreach ($relative in @('EndfieldChenTool.exe', 'EndfieldChenTool.dll', 'runtime\crypto\VfsCrypto.exe', 'runtime\crypto\VfsCrypto.dll')) {
+$lockCandidates = @('EndfieldChenTool.exe', 'EndfieldChenTool.dll', 'runtime\crypto\VfsCrypto.exe', 'runtime\crypto\VfsCrypto.dll')
+foreach ($runtimeName in $exporterBuilds.Keys) {
+    $installedRuntime = Join-Path $packageRoot ('runtime\' + $runtimeName)
+    if (Test-Path -LiteralPath $installedRuntime -PathType Container) {
+        $lockCandidates += Get-ChildItem -LiteralPath $installedRuntime -File -Recurse |
+            Where-Object { $_.Extension -in @('.dll', '.exe') } |
+            ForEach-Object { [IO.Path]::GetRelativePath($packageRoot, $_.FullName) }
+    }
+}
+foreach ($relative in $lockCandidates) {
     $installedFile = Join-Path $packageRoot $relative
     if (Test-Path -LiteralPath $installedFile -PathType Leaf) {
         try {
@@ -63,10 +84,30 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'THIRD_PARTY.md') -Destination (Join
 foreach ($folder in @('profiles', 'runtime', 'templates', 'scripts', 'licenses', 'sources')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $folder) -Destination $packageRoot -Recurse -Force
 }
+Copy-Item -LiteralPath (Join-Path $repoRoot 'sources\exporters\RuntimeDependencies.props') -Destination (Join-Path $packageRoot 'sources\exporters\RuntimeDependencies.props') -Force
 foreach ($file in Get-ChildItem -LiteralPath $cryptoRoot -File) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packageRoot ('runtime\crypto\' + $file.Name)) -Force
 }
-foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py')) {
+# Keep legacy runtimes intact; the model and ACL decoder use different AnimeStudio versions.
+foreach ($runtimeName in $exporterBuilds.Keys) {
+    $baselineRuntime = if ($runtimeName -eq 'object-model') { 'model' } else { 'animation' }
+    $destination = Join-Path $packageRoot ('runtime\' + $runtimeName)
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $sourceRoot ('runtime\' + $baselineRuntime)) -File) {
+        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $destination $file.Name) -Force
+    }
+    $buildDirectory = Join-Path (Split-Path -Parent $repoRoot) ('outputs\character_tool_framework\' + $runtimeName)
+    foreach ($file in Get-ChildItem -LiteralPath $buildDirectory -File) {
+        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $destination $file.Name) -Force
+    }
+    $projectName = $exporterBuilds[$runtimeName]
+    $exporterSource = Join-Path $packageRoot ('sources\exporters\' + $projectName)
+    New-Item -ItemType Directory -Path $exporterSource -Force | Out-Null
+    foreach ($file in @('Program.cs', ($projectName + '.csproj'))) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\exporters\' + $projectName + '\' + $file)) -Destination (Join-Path $exporterSource $file) -Force
+    }
+}
+foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py', 'object_pipeline.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $packageRoot ('scripts\' + $file)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'profiles\known_builds.json') -Destination (Join-Path $packageRoot 'profiles\known_builds.json') -Force
@@ -84,6 +125,6 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'Framework') -Destination $guiSource
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.5.0-bundle-preview'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.6.0-object-export-preview'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

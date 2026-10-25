@@ -1,6 +1,6 @@
 # 终末地角色工作台与陈千语提取工具
 
-2026-10-25：源码现为 **0.5.0 Bundle 提取预览**，已接通计划执行、清单依赖补齐、流式提取／解密、MD5 校验、取消与文件级恢复，以及结果和日志入口。当前新后端只导出 `.ab` Bundle，模型／动画对象解析及 FBX／`.anim` 导出待接入。使用见[Bundle 提取说明](docs/Bundle提取说明.md)，索引兼容机制见[通用兼容架构](docs/通用兼容架构.md)。旧陈千语提取仍锁定原配置版本，其 v0.1.3 成品位于 `D:/AAAChatGPT/EndfieldChenTool`；新工作台独立运行目录为 `D:/AAAChatGPT/EndfieldCharacterTool-Framework`。
+2026-10-25：源码现为 **0.6.0 对象导出预览**，在 Bundle 提取基础上新增实际对象解析、模型根节点／Avatar／动画选择、FBX 和原始 `.anim` 导出。精确选择依据来源 Bundle、资产文件和 PathID；不把同名资源自动视为同一对象。已完成编译，尚未运行新流程或验证播放。使用见[对象解析与导出说明](docs/对象解析与导出说明.md)，前置步骤见[Bundle 提取说明](docs/Bundle提取说明.md)。旧陈千语提取仍锁定原配置版本，其 v0.1.3 成品位于 `D:/AAAChatGPT/EndfieldChenTool`；新工作台独立运行目录为 `D:/AAAChatGPT/EndfieldCharacterTool-Framework`。
 
 以下为保留的陈千语 v0.1.3 提取流程说明，可从工作台的“环境与已有工具”页面或 `--chen` 参数进入该窗口。
 

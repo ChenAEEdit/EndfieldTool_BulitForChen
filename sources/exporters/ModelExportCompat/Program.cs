@@ -54,9 +54,13 @@ var objects = manager.assetsFileList.SelectMany(file => file.Objects).ToArray();
 var roots = objects.OfType<GameObject>()
     .Where(gameObject => string.Equals(gameObject.m_Name, rootName, StringComparison.OrdinalIgnoreCase))
     .Where(gameObject => selectedPathId is null || gameObject.m_PathID == selectedPathId)
+    .Where(gameObject => !options.TryGetValue("root-source-asset", out var asset) || gameObject.assetsFile.fileName == asset)
+    .Where(gameObject => !options.TryGetValue("root-source-bundle", out var bundle) || gameObject.assetsFile.originalPath == bundle)
     .OrderBy(gameObject => gameObject.assetsFile.originalPath, StringComparer.OrdinalIgnoreCase)
     .ThenBy(gameObject => gameObject.m_PathID)
     .ToArray();
+var strictSelection = options.GetValueOrDefault("strict-selection", "false") == "true";
+if (strictSelection && roots.Length != 1) throw new InvalidDataException("Selected model root is missing or ambiguous.");
 
 var probes = new List<CandidateProbe>();
 foreach (var root in roots)
@@ -100,6 +104,10 @@ var viable = probes
     .ToArray();
 var selected = viable.FirstOrDefault();
 var avatarCandidates = objects.OfType<Avatar>()
+    .Where(avatar => !strictSelection || options.ContainsKey("avatar-path-id"))
+    .Where(avatar => !options.TryGetValue("avatar-path-id", out var id) || avatar.m_PathID == long.Parse(id))
+    .Where(avatar => !options.TryGetValue("avatar-source-asset", out var asset) || avatar.assetsFile.fileName == asset)
+    .Where(avatar => !options.TryGetValue("avatar-source-bundle", out var bundle) || avatar.assetsFile.originalPath == bundle)
     .Select(ProbeAvatar)
     .OrderByDescending(candidate => candidate.ValidHumanBoneCount)
     .ThenByDescending(candidate => candidate.HumanDescriptionBoneCount)
@@ -107,7 +115,9 @@ var avatarCandidates = objects.OfType<Avatar>()
     .ThenByDescending(candidate => candidate.SkeletonNodeCount)
     .ThenBy(candidate => candidate.Avatar.m_Name, StringComparer.OrdinalIgnoreCase)
     .ToArray();
-var selectedAvatar = avatarCandidates.FirstOrDefault(candidate => candidate.ValidHumanBoneCount >= 15);
+if (strictSelection && options.ContainsKey("avatar-path-id") && avatarCandidates.Length != 1)
+    throw new InvalidDataException("Selected Avatar is missing or ambiguous.");
+var selectedAvatar = strictSelection ? avatarCandidates.FirstOrDefault() : avatarCandidates.FirstOrDefault(candidate => candidate.ValidHumanBoneCount >= 15);
 string? fbxPath = null;
 string? materialReportPath = null;
 string? materialPropertyReportPath = null;

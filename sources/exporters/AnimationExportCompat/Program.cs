@@ -2,6 +2,8 @@ using AnimeStudio;
 using SevenZip;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
+using System.Text;
 
 var options = ParseOptions(args);
 if (!options.TryGetValue("input", out var input) ||
@@ -60,9 +62,17 @@ void AddGlobalTos(GameObject parent, string parentPath)
         }
     }
 }
-foreach (var rootTransform in manager.assetsFileList.SelectMany(file => file.Objects).OfType<Transform>().Where(transform => !transform.m_Father.TryGet(out _)))
+foreach (var rootTransform in manager.assetsFileList.SelectMany(file => file.Objects).OfType<Transform>()
+    .Where(transform => !options.ContainsKey("selection") && !transform.m_Father.TryGet(out _)))
 {
     if (rootTransform.m_GameObject.TryGet(out var root)) AddGlobalTos(root, string.Empty);
+}
+if (options.TryGetValue("avatar-tos", out var avatarTos))
+{
+    globalTos.Clear(); globalTos[0] = "";
+    using var avatarDocument = JsonDocument.Parse(File.ReadAllText(avatarTos));
+    foreach (var path in avatarDocument.RootElement.GetProperty("avatar").GetProperty("m_TOS").EnumerateObject())
+        globalTos[uint.Parse(path.Name)] = path.Value.GetString()!;
 }
 Directory.CreateDirectory(output);
 
@@ -70,6 +80,16 @@ var allClips = manager.assetsFileList.SelectMany(file => file.Objects).OfType<An
 var candidateClips = allClips
     .Where(clip => clip.m_Name.Contains(nameContains, StringComparison.OrdinalIgnoreCase))
     .ToArray();
+if (options.TryGetValue("selection", out var selectionPath))
+{
+    using var selection = JsonDocument.Parse(File.ReadAllText(selectionPath));
+    var exact = selection.RootElement.EnumerateArray().Select(row => (
+        SourceAsset: row.GetProperty("sourceAsset").GetString(),
+        SourceBundle: row.GetProperty("sourceBundle").GetString(),
+        PathId: long.Parse(row.GetProperty("pathId").GetString()!))).ToHashSet();
+    candidateClips = allClips.Where(clip => exact.Contains((clip.assetsFile.fileName, clip.assetsFile.originalPath, clip.m_PathID))).ToArray();
+    if (candidateClips.Length != exact.Count) throw new InvalidDataException("Selected clips are missing or ambiguous.");
+}
 var excludedClips = candidateClips
     .Where(clip => clipExcludeRegex?.IsMatch(clip.m_Name) == true)
     .ToArray();
@@ -82,13 +102,18 @@ foreach (var clip in clips)
 {
     try
     {
-        var yaml = clip.Convert();        yaml = Regex.Replace(yaml, "(?m)^    path: path_(\\d+)$", match =>
+        var yaml = clip.Convert();
+        yaml = Regex.Replace(yaml, "(?m)^    path: path_(\\d+)$", match =>
         {
             return uint.TryParse(match.Groups[1].Value, out var hash) && globalTos.TryGetValue(hash, out var path)
                 ? "    path: " + path
                 : match.Value;
         });
-        var fileName = $"{SafeName(clip.m_Name)}_{clip.m_PathID}.anim";
+        var sourceSuffix = options.ContainsKey("selection") ? "_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            clip.assetsFile.originalPath + "\n" + clip.assetsFile.fileName)))[..12] : "";
+        var stem = SafeName(clip.m_Name);
+        if (options.ContainsKey("selection") && stem.Length > 48) stem = stem[..48];
+        var fileName = $"{stem}_{clip.m_PathID}{sourceSuffix}.anim";
         var target = Path.Combine(output, fileName);
         File.WriteAllText(target, yaml);
         exports.Add(new

@@ -1,0 +1,257 @@
+"""Inspect verified task Bundles and export explicitly selected objects. No Unity adaptation."""
+from __future__ import annotations
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import uuid
+from index_game_resources import ROOT, digest, emit, within, write_json
+from extract_plan_bundles import require
+
+STATE = {}
+
+
+def read(path):
+    path = Path(path)
+    require(path.stat().st_size <= 256 * 1024 * 1024, "对象操作文件过大。")
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def md5(path):
+    checksum = hashlib.md5()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+            checksum.update(block)
+    return checksum.hexdigest().upper()
+
+
+def publish():
+    STATE["result"]["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    write_json(STATE["run"] / "operation.json", STATE["result"])
+    write_json(STATE["task"] / "objects/result.json", STATE["result"])
+
+
+def run_tool(relative, args):
+    executable = ROOT / relative
+    require(executable.is_file(), "对象解析组件缺失：" + str(executable))
+    process = subprocess.Popen([str(executable), *map(str, args)], cwd=executable.parent,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    for line in process.stdout:
+        emit(line.rstrip())
+    return process.wait()
+
+
+def checked_path(path, root):
+    path = Path(path).resolve()
+    require(within(path, root.resolve()), "对象操作路径超出了当前任务。")
+    return path
+
+
+def checked_inputs(inventory):
+    base = checked_path(inventory["input"], STATE["task"])
+    expected = set()
+    for row in inventory["inputFiles"]:
+        path = checked_path(row["path"], base)
+        require(path.is_file() and path.stat().st_size == row["length"] and md5(path) == row["md5"],
+                "解析快照已变化，请重新解析 Bundle。")
+        expected.add(path)
+    require(set(base.glob("*.ab")) == expected, "解析快照出现额外或缺失 Bundle，请重新解析。")
+    return base
+
+
+def inspect_bundles(bundle_result, plan_bytes):
+    run = STATE["run"]
+    inputs = run / "input"
+    inputs.mkdir()
+    copied = {}
+    for index, row in enumerate(bundle_result["files"]):
+        source = checked_path(row["path"], STATE["task"] / "bundles")
+        require(source.is_file() and source.stat().st_size == row["length"] and md5(source) == row["md5"],
+                "Bundle 输出已变化，请先继续／重试 Bundle 提取：" + str(source))
+        name = source.name
+        if name.casefold() in copied:
+            require(copied[name.casefold()]["md5"] == row["md5"], "不同 Bundle 使用相同文件名，无法可靠解析。")
+            continue
+        target = inputs / name
+        shutil.copy2(source, target)
+        require(md5(target) == row["md5"], "复制解析快照失败。")
+        copied[name.casefold()] = {"path": str(target), "md5": row["md5"], "length": row["length"]}
+        emit(f"准备解析快照 {index + 1}/{len(bundle_result['files'])}", 5 + int(25 * (index + 1) / len(bundle_result["files"])))
+    report = run / "inventory.json"
+    emit("读取实际模型、网格、Avatar 和动画对象…", 35)
+    code = run_tool("runtime/object-probe/BundleObjectProbe.exe", ["--input", inputs, "--report", report])
+    require(code == 0 and report.is_file(), "Bundle 对象解析失败，请查看本次日志。")
+    inventory = read(report)
+    require(inventory.get("schema") == "endfield-object-inventory-v1" and inventory.get("objects"), "没有解析到可列出的对象。")
+    keys = [row["key"] for row in inventory["objects"]]
+    require(len(keys) == len(set(keys)), "对象标识重复，无法精确选择。")
+    inventory.update(taskId=STATE["result"]["taskId"], runId=STATE["result"]["runId"],
+        bundleRunId=bundle_result["runId"], planSha256=hashlib.sha256(plan_bytes).hexdigest().upper(), inputFiles=list(copied.values()))
+    for row in inventory["objects"]:
+        if row.get("avatarTosPath"):
+            row["avatarTosSha256"] = digest(checked_path(row["avatarTosPath"], run))
+    checked_inputs(inventory)
+    write_json(report, inventory)
+    STATE["result"].update(status="inspected", inventoryPath=str(report),
+        message=f"已列出 {len(keys)} 个实际对象，尚未导出或验证播放。")
+
+
+def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
+    inventory_path = checked_path(inventory_path, STATE["task"] / "objects")
+    inventory = read(inventory_path)
+    require(inventory["schema"] == "endfield-object-inventory-v1" and inventory["taskId"] == STATE["result"]["taskId"], "对象列表不属于当前任务。")
+    require(inventory["bundleRunId"] == bundle_result["runId"]
+            and inventory["planSha256"] == hashlib.sha256(plan_bytes).hexdigest().upper(), "提取记录或计划已变化，请重新解析对象。")
+    STATE["result"]["inventoryPath"] = str(inventory_path)
+    inputs = checked_inputs(inventory)
+    selection = read(checked_path(selection_path, STATE["run"]))
+    objects = {row["key"]: row for row in inventory["objects"]}
+    root = objects.get(selection.get("modelKey"))
+    avatar = objects.get(selection.get("avatarKey"))
+    clips = [objects.get(key) for key in selection.get("clipKeys", [])]
+    require(not selection.get("modelKey") or (root and root["kind"] == "GameObject" and root["isModelCandidate"]), "所选模型根节点无效。")
+    require(not selection.get("avatarKey") or (avatar and avatar["kind"] == "Avatar"), "所选 Avatar 无效。")
+    if root and root.get("linkedAvatarKey") and avatar:
+        require(root["linkedAvatarKey"] == avatar["key"], "所选 Avatar 与模型实际 Animator 引用不一致。")
+    elif avatar:
+        STATE["result"]["warnings"].append("所选 Avatar 未由模型 Animator 引用确认；请核对骨架路径和单位。")
+    require(all(clip and clip["kind"] == "AnimationClip" for clip in clips), "所选动画对象无效。")
+    require(root or clips, "请选择模型或动画对象。")
+    require(len(clips) == len(set(row["key"] for row in clips)), "动画对象重复。")
+    output = STATE["run"] / "exports"
+    output.mkdir()
+    failures = STATE["result"]["failures"]
+    if root:
+        emit("导出精确选择的模型根节点为 FBX…", 30)
+        report = STATE["run"] / "model-report.json"
+        arguments = ["--input", inputs, "--output", output / "model", "--root-name", root["name"],
+            "--path-id", root["pathId"], "--root-source-asset", root["sourceAsset"], "--root-source-bundle", root["sourceBundle"],
+            "--strict-selection", "true", "--report", report]
+        if avatar:
+            arguments += ["--avatar-path-id", avatar["pathId"], "--avatar-source-asset", avatar["sourceAsset"],
+                          "--avatar-source-bundle", avatar["sourceBundle"]]
+        code = run_tool("runtime/object-model/ModelExportCompat.exe", arguments)
+        model = read(report) if report.is_file() else {}
+        if code == 0 and model.get("fbx_bytes", 0) > 0 and (model.get("selected") or {}).get("mesh_count", 0) > 0 and not model.get("export_error"):
+            register_output(model["fbx"], "FBX")
+            for texture in model.get("textures", []):
+                register_output(texture["path"], "Texture")
+            for field in ("material_report", "material_properties_report", "avatar_retarget"):
+                if model.get(field):
+                    register_output(model[field], "ModelMetadata")
+            if model.get("unresolved_external_file_count", 0):
+                STATE["result"]["warnings"].append("模型存在未解析的外部引用，详见 model-report.json。")
+        else:
+            failures.append("所选模型导出失败，详见 model-report.json 和运行日志。")
+    if clips:
+        emit("解码精确选择的 AnimationClip 对象…", 65)
+        report = STATE["run"] / "animation-report.json"
+        clip_selection = STATE["run"] / "clips.json"
+        write_json(clip_selection, clips)
+        arguments = ["--input", inputs, "--output", output / "animations", "--name-contains", "",
+                     "--selection", clip_selection, "--report", report]
+        if avatar:
+            tos = checked_path(avatar["avatarTosPath"], inventory_path.parent)
+            require(digest(tos) == avatar["avatarTosSha256"], "Avatar 路径表已变化，请重新解析对象。")
+            arguments += ["--avatar-tos", tos]
+        code = run_tool("runtime/object-animation/AnimationExportCompat.exe", arguments)
+        animations = read(report) if report.is_file() else {}
+        exports = animations.get("exports", [])
+        if code != 0 or len(exports) != len(clips) or animations.get("failed_clip_count", 0):
+            failures.append("部分或全部动画未能解码，详见 animation-report.json。")
+        for row in exports:
+            if row.get("curves", 0) <= 0 or row.get("keys", 0) <= 0:
+                failures.append("动画为空：" + row.get("m_Name", "")); continue
+            path = checked_path(row["output"], STATE["run"])
+            yaml = path.read_text(encoding="utf-8-sig")
+            if re.search(r"(?m)^        value:.*(?:NaN|Infinity|∞|\.nan|\.inf)", yaml):
+                failures.append("动画包含非有限关键帧值：" + row["m_Name"]); continue
+            register_output(path, "AnimationSource", curves=row["curves"], keys=row["keys"], unknownPaths=row["unknown_paths"])
+            if row["unknown_paths"]:
+                STATE["result"]["warnings"].append(row["m_Name"] + " 尚有未解析路径，不能直接用于播放。")
+    checked_inputs(inventory)
+    STATE["result"].update(status="partial" if failures else "exported_unverified", inventoryPath=str(inventory_path),
+        message="导出结束；模型与原始动画尚未进行 Unity 适配或播放验证。")
+    STATE["result"]["warnings"].append("动画为原始解码结果；未进行单位、播放模式、共享面部轨道或附加层适配。")
+
+
+def register_output(path, kind, **extra):
+    path = checked_path(path, STATE["run"] / "exports")
+    require(path.is_file() and path.stat().st_size > 0, "导出文件缺失或为空。")
+    STATE["result"]["files"].append({"kind": kind, "path": str(path), "bytes": path.stat().st_size, "sha256": digest(path), **extra})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan", required=True, type=Path)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--mode", required=True, choices=("inspect", "export"))
+    parser.add_argument("--inventory", type=Path)
+    parser.add_argument("--selection", type=Path)
+    args = parser.parse_args()
+    plan_path = args.plan.resolve()
+    plan = read(plan_path)
+    plan_bytes = plan_path.read_bytes()
+    require(json.loads(plan_bytes.decode("utf-8-sig")) == plan, "读取期间计划发生变化。")
+    require(plan.get("schema") == "endfield-character-plan-v1", "计划格式不兼容。")
+    task_id, run_id = uuid.UUID(plan["id"]), uuid.UUID(args.run_id).hex
+    workspace = Path(plan["options"]["workspaceDirectory"]).resolve()
+    task = (workspace / "tasks" / task_id.hex).resolve()
+    require(within(task, workspace) and plan_path == task / "plan.json", "计划不在对应任务目录。")
+    require(read(workspace / "character-workspace.json").get("schema") == "endfield-character-workspace-v1", "工作区标识不兼容。")
+    require(not (within(workspace, ROOT) or within(ROOT, workspace)), "工作区必须独立于工具目录。")
+    lock = (task / "extraction.lock").open("a+b")
+    if os.name == "nt":
+        import msvcrt
+        if lock.seek(0, 2) == 0:
+            lock.write(b"0"); lock.flush()
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as error:
+            raise ValueError("当前任务正在提取或解析，请稍后再试。") from error
+    bundle_result = read(task / "result.json")
+    require(bundle_result["schema"] == "endfield-bundle-extraction-v1" and bundle_result["taskId"] == str(task_id)
+            and bundle_result["status"] == "bundles_extracted", "请先完成该任务的 Bundle 提取。")
+    require(bundle_result.get("planSha256") == hashlib.sha256(plan_bytes).hexdigest().upper(), "计划已变化，请重新提取 Bundle。")
+    require(bundle_result.get("files"), "任务没有已提取 Bundle。")
+    run = task / "objects" / run_id
+    checked_path(run, task)
+    run.mkdir(parents=True, exist_ok=True)
+    STATE.update(task=task, run=run, result={"schema": "endfield-object-operation-v1", "taskId": str(task_id),
+        "runId": run_id, "bundleRunId": bundle_result["runId"], "mode": args.mode, "status": "running", "message": "正在读取对象。", "files": [],
+        "warnings": [], "failures": [], "inventoryPath": None, "outputDirectory": str(run / "exports"),
+        "adapted": False, "playbackVerified": False, "startedAt": datetime.now(timezone.utc).isoformat()})
+    publish()
+    if args.mode == "inspect":
+        inspect_bundles(bundle_result, plan_bytes)
+    else:
+        require(args.inventory and args.selection, "导出需要对象列表和明确选择。")
+        export_objects(args.inventory, args.selection, bundle_result, plan_bytes)
+    require(plan_path.read_bytes() == plan_bytes, "执行期间计划已变化，结果未标为完成。")
+    publish()
+    emit(STATE["result"]["message"], 100, "completed", report=str(task / "objects/result.json"))
+    lock.close()
+
+
+if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    try:
+        main()
+    except Exception as error:
+        if STATE:
+            STATE["result"].update(status="failed", message=str(error))
+            try:
+                publish()
+            except OSError:
+                pass
+        emit(str(error), kind="error")
+        raise SystemExit(1)

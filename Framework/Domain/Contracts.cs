@@ -137,7 +137,7 @@ public sealed record BundleExtractionResult
     public int ExtractedFiles { get; init; }
     public int ReusedFiles { get; init; }
     public string BundleExtraction { get; init; } = "running";
-    public string ObjectDecoding { get; init; } = "not_implemented";
+    public string ObjectDecoding { get; init; } = "not_run";
     public string AnimationAdaptation { get; init; } = "not_implemented";
     public string Weights { get; init; } = "not_run";
     public string UnityPreview { get; init; } = "not_run";
@@ -153,4 +153,60 @@ public interface IExtractionBackend
     bool Supports(ExtractionPlan plan);
     Task<BundleExtractionResult> ExecuteAsync(SavedPlan saved, IProgress<ExtractionProgress> progress,
         CancellationToken cancellationToken);
+}
+
+public sealed record BundleObjectRow
+{
+    public string Key { get; init; } = "";
+    public string Kind { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string PathId { get; init; } = "";
+    public string SourceAsset { get; init; } = "";
+    public string SourceBundle { get; init; } = "";
+    public bool IsModelCandidate { get; init; }
+    public string? LinkedAvatarKey { get; init; }
+    public int RendererCount { get; init; }
+    public int BoneReferenceCount { get; init; }
+    public int HierarchyNodes { get; init; }
+    public override string ToString() => $"{Name} [{PathId}]";
+}
+
+public sealed record ObjectInventory
+{
+    public string Schema { get; init; } = "";
+    public Guid TaskId { get; init; }
+    public string RunId { get; init; } = "";
+    public List<BundleObjectRow> Objects { get; init; } = [];
+}
+
+public sealed record ObjectExportSelection(string? ModelKey, string? AvatarKey, List<string> ClipKeys);
+
+public sealed record ObjectOutputFile
+{
+    public string Kind { get; init; } = "";
+    public string Path { get; init; } = "";
+    public long Bytes { get; init; }
+    public string Sha256 { get; init; } = "";
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; init; }
+}
+
+public sealed record ObjectOperationResult
+{
+    public string Schema { get; init; } = "endfield-object-operation-v1";
+    public Guid TaskId { get; init; }
+    public string RunId { get; init; } = "";
+    public string BundleRunId { get; init; } = "";
+    public string Mode { get; init; } = "";
+    public string Status { get; init; } = "";
+    public string Message { get; init; } = "";
+    public string? InventoryPath { get; init; }
+    public string OutputDirectory { get; init; } = "";
+    public bool Adapted { get; init; }
+    public bool PlaybackVerified { get; init; }
+    public List<ObjectOutputFile> Files { get; init; } = [];
+    public List<string> Warnings { get; init; } = [];
+    public List<string> Failures { get; init; } = [];
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; init; }
 }

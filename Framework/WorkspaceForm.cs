@@ -4,7 +4,7 @@ using EndfieldChenTool.Framework.Services;
 
 namespace EndfieldChenTool.Framework;
 
-internal sealed class WorkspaceForm : Form
+internal sealed partial class WorkspaceForm : Form
 {
     private static readonly Color Ink = Color.FromArgb(32, 45, 62);
     private static readonly Color Accent = Color.FromArgb(33, 100, 116);
@@ -47,7 +47,7 @@ internal sealed class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · Bundle 提取预览 0.5.0";
+        Text = "终末地角色工作台 · 对象导出预览 0.6.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
@@ -63,7 +63,7 @@ internal sealed class WorkspaceForm : Form
         var header = new Panel { Dock = DockStyle.Fill };
         header.Controls.Add(new Label { Text = "终末地角色工作台", AutoSize = true,
             Font = new Font(Font.FontFamily, 23, FontStyle.Bold), Location = new Point(0, 0) });
-        header.Controls.Add(new Label { Text = "搜索资源 → 选择内容 → 制定提取计划 → 查看任务", AutoSize = true,
+        header.Controls.Add(new Label { Text = "搜索资源 → 提取 Bundle → 解析对象 → 选择并导出", AutoSize = true,
             ForeColor = Color.DimGray, Location = new Point(3, 48) });
         layout.Controls.Add(header, 0, 0);
         layout.Controls.Add(pages, 0, 1);
@@ -81,6 +81,7 @@ internal sealed class WorkspaceForm : Form
         BuildTasksPage();
         BuildSettingsPage(settings);
         BuildScanPage();
+        BuildObjectsPage();
         search.TextChanged += (_, _) => { searchTimer.Stop(); searchTimer.Start(); };
         searchTimer.Tick += (_, _) => { searchTimer.Stop(); RefreshCharacters(); };
         characters.SelectedIndexChanged += (_, _) => SelectCharacter();
@@ -210,6 +211,7 @@ internal sealed class WorkspaceForm : Form
         scanCancellation = cancellation;
         scan.Enabled = probe.Enabled = forceScan.Enabled = false;
         executeExtraction.Enabled = resumeExtraction.Enabled = false;
+        SetObjectActionsEnabled(false);
         stopScan.Enabled = true;
         foreach (var action in catalogActions) action.Enabled = false;
         pages.TabPages[3].Enabled = false;
@@ -261,6 +263,7 @@ internal sealed class WorkspaceForm : Form
             scanCancellation = null;
             scan.Enabled = probe.Enabled = forceScan.Enabled = true;
             executeExtraction.Enabled = resumeExtraction.Enabled = true;
+            SetObjectActionsEnabled(true);
             stopScan.Enabled = false;
             foreach (var action in catalogActions) action.Enabled = true;
             pages.TabPages[3].Enabled = true;
@@ -311,6 +314,8 @@ internal sealed class WorkspaceForm : Form
         })));
         actions.Controls.Add(ActionButton("打开提取结果", () => RunAction(() =>
             OpenLocal(Path.Combine(Path.GetDirectoryName(SelectedTask().FilePath)!, "result.json")))));
+        actions.Controls.Add(inspectObjects);
+        actions.Controls.Add(ActionButton("载入已有对象列表", () => RunAction(LoadSavedObjects)));
         layout.Controls.Add(actions, 0, 1);
         layout.Controls.Add(tasks, 0, 2);
         layout.Controls.Add(taskDetails, 0, 3);
@@ -527,7 +532,13 @@ internal sealed class WorkspaceForm : Form
         {
             var row = new ListViewItem(saved.Plan.CharacterName) { Tag = saved };
             row.SubItems.Add(saved.Plan.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
-            try { row.SubItems.Add(ResultStatus(BundleExtractionBackend.ReadResult(saved)?.Status)); }
+            try
+            {
+                var bundle = BundleExtractionBackend.ReadResult(saved);
+                var objects = ObjectWorkflow.ReadResult(saved);
+                row.SubItems.Add(bundle?.Status == "bundles_extracted" && objects != null && objects.BundleRunId == bundle.RunId
+                    ? ObjectStatus(objects.Status) : ResultStatus(bundle?.Status));
+            }
             catch (Exception) { row.SubItems.Add("结果记录无法读取"); }
             tasks.Items.Add(row);
         }
@@ -542,6 +553,7 @@ internal sealed class WorkspaceForm : Form
         {
             var result = BundleExtractionBackend.ReadResult(saved);
             taskDetails.Text = (result == null ? "尚无执行结果。\r\n" : DescribeResult(result))
+                + DescribeObjectResult(ObjectWorkflow.ReadResult(saved))
                 + "\r\n计划文件：" + saved.FilePath + "\r\n\r\n" + Describe(saved.Plan);
         }
         catch (Exception error) { taskDetails.Text = "结果记录无法读取：" + error.Message; }
@@ -565,6 +577,7 @@ internal sealed class WorkspaceForm : Form
         using var cancellation = new CancellationTokenSource();
         extractionCancellation = cancellation;
         executeExtraction.Enabled = resumeExtraction.Enabled = false;
+        SetObjectActionsEnabled(false);
         scan.Enabled = probe.Enabled = forceScan.Enabled = false;
         stopScan.Enabled = true;
         foreach (var action in catalogActions) action.Enabled = false;
@@ -597,6 +610,7 @@ internal sealed class WorkspaceForm : Form
             scanLog.AppendText(status.Text + Environment.NewLine);
             extractionCancellation = null;
             executeExtraction.Enabled = resumeExtraction.Enabled = true;
+            SetObjectActionsEnabled(true);
             scan.Enabled = probe.Enabled = forceScan.Enabled = true;
             stopScan.Enabled = false;
             foreach (var action in catalogActions) action.Enabled = true;
@@ -628,7 +642,7 @@ internal sealed class WorkspaceForm : Form
     private static string DescribeResult(BundleExtractionResult result) =>
         $"执行状态：{ResultStatus(result.Status)}\r\n{result.Message}\r\n"
         + $"文件：{result.Files.Count}/{result.TotalBundles}；新提取 {result.ExtractedFiles}，复用 {result.ReusedFiles}\r\n"
-        + $"目录：{result.OutputDirectory}\r\n模型／动画解码：未执行；权重、Unity 及播放检查：未执行。\r\n"
+        + $"目录：{result.OutputDirectory}\r\n此记录仅表示 Bundle 提取；对象解析／导出状态见下方对象结果。权重、Unity 及播放检查未执行。\r\n"
         + string.Join("\r\n", result.Files.Take(200).Select(file => $"  [{(file.Cached ? "已校验复用" : "已提取校验")}] {file.Path}"))
         + (result.Files.Count > 200 ? "\r\n其余文件见完整结果 JSON。\r\n" : "\r\n");
 
@@ -639,7 +653,7 @@ internal sealed class WorkspaceForm : Form
         + $"选中 {plan.RequestedResourceIds.Count} 项；包含已收录模型／Avatar 后 {plan.Resources.Count} 项；Bundle 依赖展开后 {plan.Bundles.Count} 个。\r\n\r\n资源：\r\n"
         + string.Join("\r\n", plan.Resources.Select(resource => $"  [{KindText(resource.Kind)}] {resource.Name}"))
         + "\r\n\r\n执行阶段：\r\n" + string.Join("\r\n", plan.Stages.Select(stage => $"  {stage.Name}：{StateText(stage.State)}"))
-        + "\r\n\r\n执行按钮只提取 Bundle 和清单依赖；对象解析、FBX／动画导出与 Unity 预览尚未接入。";
+        + "\r\n\r\nBundle 提取完成后，在任务记录中解析对象，再选择导出 FBX／原始动画；Unity 适配与播放验证尚未接入。";
 
     private void RunAction(Action action)
     {

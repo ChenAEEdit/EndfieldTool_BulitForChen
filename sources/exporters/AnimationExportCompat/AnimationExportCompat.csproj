@@ -1,25 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <PropertyGroup><RuntimeRoot Condition="'$(RuntimeRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\runtime\animation</RuntimeRoot></PropertyGroup>
   <ItemGroup>
-    <Reference Include="AnimeStudio">
-      <HintPath>D:\AAAChatGPT\2026-10-23\ni\work\ZMD_unpack\work\upstream\AnimeStudio-EIHR\AnimeStudio-1fbe5a570976d1f05db514993b4e1697e43cfa5d\AnimeStudio\bin\Release\net10.0\AnimeStudio.dll</HintPath>
-    </Reference>
-    <Reference Include="AnimeStudio.Utility">
-      <HintPath>D:\AAAChatGPT\2026-10-23\ni\work\ZMD_unpack\work\upstream\AnimeStudio-EIHR\AnimeStudio-1fbe5a570976d1f05db514993b4e1697e43cfa5d\AnimeStudio.Utility\bin\Release\net10.0\AnimeStudio.Utility.dll</HintPath>
-    </Reference>
-    <Reference Include="AnimeStudio.FBXWrapper">
-      <HintPath>D:\AAAChatGPT\2026-10-23\ni\work\ZMD_unpack\work\upstream\AnimeStudio-EIHR\AnimeStudio-1fbe5a570976d1f05db514993b4e1697e43cfa5d\AnimeStudio.FBXWrapper\bin\Release\net10.0\AnimeStudio.FBXWrapper.dll</HintPath>
-    </Reference>
-    <Reference Include="AnimeStudio.PInvoke">
-      <HintPath>D:\AAAChatGPT\2026-10-23\ni\work\ZMD_unpack\work\upstream\AnimeStudio-EIHR\AnimeStudio-1fbe5a570976d1f05db514993b4e1697e43cfa5d\AnimeStudio.PInvoke\bin\Release\net10.0\AnimeStudio.PInvoke.dll</HintPath>
-    </Reference>
-    <Reference Include="Ruri.ACL">
-      <HintPath>D:\AAAChatGPT\2026-10-23\ni\work\ZMD_unpack\work\upstream\AnimeStudio-EIHR\AnimeStudio-1fbe5a570976d1f05db514993b4e1697e43cfa5d\AnimeStudio.Utility\bin\Release\net10.0\Ruri.ACL.dll</HintPath>
-    </Reference>
+    <Reference Include="AnimeStudio"><HintPath>$(RuntimeRoot)\AnimeStudio.dll</HintPath></Reference>
+    <Reference Include="AnimeStudio.Utility"><HintPath>$(RuntimeRoot)\AnimeStudio.Utility.dll</HintPath></Reference>
+    <Reference Include="AnimeStudio.FBXWrapper"><HintPath>$(RuntimeRoot)\AnimeStudio.FBXWrapper.dll</HintPath></Reference>
+    <Reference Include="AnimeStudio.PInvoke"><HintPath>$(RuntimeRoot)\AnimeStudio.PInvoke.dll</HintPath></Reference>
+    <Reference Include="Ruri.ACL"><HintPath>$(RuntimeRoot)\Ruri.ACL.dll</HintPath></Reference>
   </ItemGroup>
+  <Import Project="..\RuntimeDependencies.props" />
 </Project>

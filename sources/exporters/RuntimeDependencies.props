@@ -1,0 +1,8 @@
+<Project>
+  <!-- Prebuilt parser libraries can load codecs through reflection. Include the complete
+       managed runtime in deps.json, even when no exporter API mentions those types. -->
+  <ItemGroup>
+    <Reference Include="$(RuntimeRoot)\*.dll"
+               Exclude="$(RuntimeRoot)\*Native.dll;$(RuntimeRoot)\*ExportCompat.dll" />
+  </ItemGroup>
+</Project>
