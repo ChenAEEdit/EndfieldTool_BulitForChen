@@ -71,6 +71,7 @@ public sealed class TaskPlanner : ITaskPlanner
             RootName = character.RootName, RootPathId = character.RootPathId,
             GameBuild = catalog.GameBuild, GameAssemblySha256 = catalog.GameAssemblySha256,
             CatalogSource = catalog.SourceDescription, Options = options,
+            CompatibilityStatus = catalog.CompatibilityStatus, CompatibilityNote = catalog.CompatibilityNote,
             RequestedResourceIds = requested.Order().ToList(), Resources = selected,
             Bundles = catalog.Bundles.Where(bundle => dependencies.Contains(bundle.Id)).ToList(),
             Stages = [

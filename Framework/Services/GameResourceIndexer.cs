@@ -5,10 +5,15 @@ using EndfieldChenTool.Framework.Domain;
 
 namespace EndfieldChenTool.Framework.Services;
 
+public sealed class GameIndexFailureException(string message, string? reportPath) : IOException(message)
+{
+    public string? ReportPath { get; } = reportPath;
+}
+
 public sealed class GameResourceIndexer : IGameResourceIndexer
 {
     public async Task<GameIndexResult> BuildAsync(WorkspaceOptions options, bool force,
-        IProgress<IndexProgress> progress, CancellationToken cancellationToken)
+        IProgress<IndexProgress> progress, CancellationToken cancellationToken, bool probeOnly = false)
     {
         var python = MainForm.FindPython(options.Blender);
         if (!File.Exists(python)) throw new InvalidDataException("找不到 Python，请在环境页面填写 Blender 路径。");
@@ -32,6 +37,7 @@ public sealed class GameResourceIndexer : IGameResourceIndexer
         foreach (var argument in new[] { script, "--game", options.GameDirectory, "--workspace", root })
             start.ArgumentList.Add(argument);
         if (force) start.ArgumentList.Add("--force");
+        if (probeOnly) start.ArgumentList.Add("--probe-only");
         cancellationToken.ThrowIfCancellationRequested();
         using var process = new Process { StartInfo = start };
         if (!process.Start()) throw new IOException("无法启动资源索引程序。");
@@ -41,6 +47,11 @@ public sealed class GameResourceIndexer : IGameResourceIndexer
             catch (InvalidOperationException) { }
         });
         string? error = null, catalogPath = null, reportPath = null;
+        string compatibilityStatus = "Unknown";
+        bool completed = false;
+        bool OwnResult(string? path) => path != null &&
+            Path.GetFullPath(path).StartsWith(Path.Combine(root, "index") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            && File.Exists(path);
         var stderr = new StringBuilder();
         async Task ReadErrors()
         {
@@ -63,24 +74,30 @@ public sealed class GameResourceIndexer : IGameResourceIndexer
                 if (row.TryGetProperty("progress", out var percent)) progress.Report(new(message, Math.Clamp(percent.GetInt32(), 0, 100)));
                 switch (row.GetProperty("type").GetString())
                 {
-                    case "error": error = message; break;
+                    case "error":
+                        error = message;
+                        if (row.TryGetProperty("report", out var failureReport)) reportPath = failureReport.GetString();
+                        break;
                     case "completed":
                         catalogPath = row.GetProperty("catalog").GetString();
                         reportPath = row.GetProperty("report").GetString();
+                        compatibilityStatus = row.GetProperty("compatibilityStatus").GetString() ?? "Unknown";
+                        completed = true;
                         break;
                 }
             }
             await process.WaitForExitAsync();
             await errorTask;
             cancellationToken.ThrowIfCancellationRequested();
-            if (process.ExitCode != 0 || catalogPath == null || reportPath == null)
-                throw new InvalidDataException((error ?? ("索引未完成。" + stderr)) + "\n扫描日志：" + logPath);
-            foreach (var resultPath in new[] { catalogPath, reportPath })
-                if (!Path.GetFullPath(resultPath).StartsWith(Path.Combine(root, "index") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                    || !File.Exists(resultPath)) throw new InvalidDataException("索引结果不在本工作区中或尚未生成。");
-            var catalog = await Task.Run(() => new JsonCatalogProvider().Load(catalogPath), cancellationToken);
+            if (process.ExitCode != 0 || !completed || reportPath == null)
+                throw new GameIndexFailureException((error ?? ("索引未完成。" + stderr)) + "\n扫描日志：" + logPath,
+                    OwnResult(reportPath) ? reportPath : null);
+            if (!OwnResult(reportPath) || (!probeOnly && !OwnResult(catalogPath)))
+                throw new InvalidDataException("索引结果不在本工作区中或尚未生成。");
+            ResourceCatalog? catalog = probeOnly ? null :
+                await Task.Run(() => new JsonCatalogProvider().Load(catalogPath!), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            return new GameIndexResult(catalog, catalogPath, reportPath, logPath);
+            return new GameIndexResult(catalog, catalogPath, reportPath, logPath, compatibilityStatus);
         }
         finally
         {

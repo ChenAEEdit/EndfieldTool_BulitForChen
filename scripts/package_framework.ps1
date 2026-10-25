@@ -42,9 +42,18 @@ $cryptoRoot = Join-Path (Split-Path -Parent $repoRoot) 'outputs\character_tool_f
 & dotnet build (Join-Path $repoRoot 'Crypto\VfsCrypto.csproj') --no-restore --configuration Release --output $cryptoRoot -p:UseSharedCompilation=false
 if ($LASTEXITCODE -ne 0) { throw '索引解码组件编译失败。' }
 
+# Check before copying any file; an open desktop application may lock its assembly.
+foreach ($relative in @('EndfieldChenTool.exe', 'EndfieldChenTool.dll', 'runtime\crypto\VfsCrypto.exe', 'runtime\crypto\VfsCrypto.dll')) {
+    $installedFile = Join-Path $packageRoot $relative
+    if (Test-Path -LiteralPath $installedFile -PathType Leaf) {
+        try {
+            $probeStream = [IO.File]::Open($installedFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $probeStream.Dispose()
+        }
+        catch { throw "目标程序仍被占用，请关闭工作台后重试，或指定新的输出目录：$installedFile" }
+    }
+}
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.3.0-discovery-preview'; executable = 'EndfieldChenTool.exe' } |
-    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 
 # Copy runtime dependencies from the known delivery. Preserve the original package.
 foreach ($name in @('pipeline.py', 'THIRD_PARTY.md')) {
@@ -57,9 +66,10 @@ foreach ($folder in @('profiles', 'runtime', 'templates', 'scripts', 'licenses',
 foreach ($file in Get-ChildItem -LiteralPath $cryptoRoot -File) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packageRoot ('runtime\crypto\' + $file.Name)) -Force
 }
-foreach ($file in @('index_game_resources.py', 'endfield_manifest.py')) {
+foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $packageRoot ('scripts\' + $file)) -Force
 }
+Copy-Item -LiteralPath (Join-Path $repoRoot 'profiles\known_builds.json') -Destination (Join-Path $packageRoot 'profiles\known_builds.json') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'Crypto\Program.cs') -Destination (Join-Path $packageRoot 'sources\crypto\Program.cs') -Force
 foreach ($file in Get-ChildItem -LiteralPath $compiledRoot -File) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packageRoot $file.Name) -Force
@@ -73,4 +83,6 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'Framework') -Destination $guiSource
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.4.0-format-preview'; executable = 'EndfieldChenTool.exe' } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

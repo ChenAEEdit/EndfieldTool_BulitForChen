@@ -48,15 +48,18 @@ public sealed record ResourceCatalog
     public List<BundleReference> Bundles { get; init; } = [];
     public List<CharacterEntry> Characters { get; init; } = [];
     public string CoverageNote { get; init; } = "";
+    public string CompatibilityStatus { get; init; } = "Unknown";
+    public string CompatibilityNote { get; init; } = "当前安装版本尚未检查。";
 }
 
 public sealed record IndexProgress(string Message, int Percent);
-public sealed record GameIndexResult(ResourceCatalog Catalog, string CatalogPath, string ReportPath, string LogPath);
+public sealed record GameIndexResult(ResourceCatalog? Catalog, string? CatalogPath, string ReportPath,
+    string LogPath, string CompatibilityStatus);
 
 public interface IGameResourceIndexer
 {
     Task<GameIndexResult> BuildAsync(WorkspaceOptions options, bool force, IProgress<IndexProgress> progress,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken, bool probeOnly = false);
 }
 
 public sealed record WorkspaceOptions
@@ -86,6 +89,8 @@ public sealed record ExtractionPlan
     public required string GameBuild { get; init; }
     public required string GameAssemblySha256 { get; init; }
     public required string CatalogSource { get; init; }
+    public string CompatibilityStatus { get; init; } = "Unknown";
+    public string CompatibilityNote { get; init; } = "当前安装版本尚未检查。";
     public required WorkspaceOptions Options { get; init; }
     public List<string> RequestedResourceIds { get; init; } = [];
     public List<ResourceEntry> Resources { get; init; } = [];

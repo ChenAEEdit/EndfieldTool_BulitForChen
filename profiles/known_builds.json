@@ -1,0 +1,10 @@
+{
+  "schema": "endfield-known-builds-v1",
+  "builds": [
+    {
+      "id": "20260821_c24495e5",
+      "gameAssemblySha256": "C24495E51B406F03B03890C4788EE618AE022C991405BE5D5B8B787CB775AE89",
+      "manifestMd5": "336AA9A203DEA2956EECF90259E1B23A"
+    }
+  ]
+}

@@ -28,6 +28,7 @@ internal sealed class WorkspaceForm : Form
     private readonly ITaskPlanner planner = new TaskPlanner();
     private readonly IGameResourceIndexer indexer = new GameResourceIndexer();
     private readonly Button scan = new() { Text = "扫描游戏资源", Width = 145, Height = 35 };
+    private readonly Button probe = new() { Text = "检查索引兼容性", Width = 135, Height = 35 };
     private readonly Button stopScan = new() { Text = "取消扫描", Width = 95, Height = 35, Enabled = false };
     private readonly CheckBox forceScan = new() { Text = "重新扫描", AutoSize = true };
     private readonly ProgressBar scanProgress = new() { Dock = DockStyle.Fill, Maximum = 100 };
@@ -42,7 +43,7 @@ internal sealed class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 资源发现预览 0.3.0";
+        Text = "终末地角色工作台 · 格式兼容预览 0.4.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
@@ -105,6 +106,7 @@ internal sealed class WorkspaceForm : Form
         };
         verifyPlayback.Enabled = importUnity.Checked;
         scan.Click += async (_, _) => await ScanGameAsync();
+        probe.Click += async (_, _) => await ScanGameAsync(probeOnly: true);
         stopScan.Click += (_, _) => scanCancellation?.Cancel();
         FormClosing += (_, e) =>
         {
@@ -126,7 +128,7 @@ internal sealed class WorkspaceForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(Note("可扫描本机游戏的角色／动作名称候选。名称候选尚未确认骨架或完成解码；压缩、加密资源可能漏项。"), 0, 0);
+        layout.Controls.Add(Note("更新游戏后可先检查索引兼容性。格式可读的新版本仍标为未验证；扫描名称候选不代表已确认骨架或完成解码。"), 0, 0);
         var tools = Flow();
         foreach (var button in new[] {
             ActionButton("加载已支持角色", () => RunAction(LoadSupportedCatalog)),
@@ -137,7 +139,7 @@ internal sealed class WorkspaceForm : Form
             tools.Controls.Add(button);
             catalogActions.Add(button);
         }
-        tools.Controls.AddRange([scan, stopScan, forceScan]);
+        tools.Controls.AddRange([probe, scan, stopScan, forceScan]);
         layout.Controls.Add(tools, 0, 1);
         var searchRow = Grid(2, 1);
         searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
@@ -180,7 +182,7 @@ internal sealed class WorkspaceForm : Form
         layout.Controls.Add(Note("扫描只读游戏文件；工作区保存索引、清单与可续扫缓存。取消后当前文件需重新扫描，之前完成的文件可以复用。"), 0, 0);
         layout.Controls.Add(scanLog, 0, 1);
         var actions = Flow();
-        actions.Controls.Add(ActionButton("打开本次索引报告", () => RunAction(() =>
+        actions.Controls.Add(ActionButton("打开本次检查报告", () => RunAction(() =>
         {
             if (latestIndexReport == null) throw new InvalidDataException("本次还没有完成的索引报告。");
             OpenLocal(latestIndexReport);
@@ -190,14 +192,14 @@ internal sealed class WorkspaceForm : Form
         page.Controls.Add(layout);
     }
 
-    private async Task ScanGameAsync()
+    private async Task ScanGameAsync(bool probeOnly = false)
     {
         if (scanCancellation != null) return;
         var options = CurrentOptions();
         var force = forceScan.Checked;
         using var cancellation = new CancellationTokenSource();
         scanCancellation = cancellation;
-        scan.Enabled = forceScan.Enabled = false;
+        scan.Enabled = probe.Enabled = forceScan.Enabled = false;
         stopScan.Enabled = true;
         foreach (var action in catalogActions) action.Enabled = false;
         pages.TabPages[3].Enabled = false;
@@ -215,18 +217,28 @@ internal sealed class WorkspaceForm : Form
                 if (scanLog.TextLength > 150000) scanLog.Text = scanLog.Text[^75000..];
                 scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
             });
-            var result = await indexer.BuildAsync(options, force, progress, cancellation.Token);
-            catalog = result.Catalog;
+            var result = await indexer.BuildAsync(options, force, progress, cancellation.Token, probeOnly);
             latestIndexReport = result.ReportPath;
-            search.Clear();
-            RefreshCharacters();
-            status.Text = $"索引已完成：{catalog.Characters.Count} 个角色名称候选；尚未解码、适配或验证。";
-            scanLog.AppendText($"\r\n索引：{result.CatalogPath}\r\n报告：{result.ReportPath}\r\n日志：{result.LogPath}\r\n{catalog.CoverageNote}\r\n");
-            pages.SelectedIndex = 0;
+            if (result.Catalog != null)
+            {
+                catalog = result.Catalog;
+                search.Clear();
+                RefreshCharacters();
+                status.Text = $"索引已完成：{catalog.Characters.Count} 个角色名称候选；{CompatibilityText(result.CompatibilityStatus)}。";
+                pages.SelectedIndex = 0;
+            }
+            else status.Text = "索引兼容性检查：" + CompatibilityText(result.CompatibilityStatus);
+            scanLog.AppendText($"\r\n兼容状态：{CompatibilityText(result.CompatibilityStatus)}\r\n索引：{result.CatalogPath ?? "本次只检查格式，未扫描名称"}\r\n报告：{result.ReportPath}\r\n日志：{result.LogPath}\r\n{result.Catalog?.CoverageNote}\r\n");
         }
         catch (OperationCanceledException)
         {
             status.Text = "扫描已取消；保留已完成缓存，再次扫描可继续。";
+            scanLog.AppendText(status.Text + Environment.NewLine);
+        }
+        catch (GameIndexFailureException error)
+        {
+            latestIndexReport = error.ReportPath;
+            status.Text = "索引格式／读取检查未通过：" + error.Message;
             scanLog.AppendText(status.Text + Environment.NewLine);
         }
         catch (Exception error)
@@ -237,7 +249,7 @@ internal sealed class WorkspaceForm : Form
         finally
         {
             scanCancellation = null;
-            scan.Enabled = forceScan.Enabled = true;
+            scan.Enabled = probe.Enabled = forceScan.Enabled = true;
             stopScan.Enabled = false;
             foreach (var action in catalogActions) action.Enabled = true;
             pages.TabPages[3].Enabled = true;
@@ -449,6 +461,7 @@ internal sealed class WorkspaceForm : Form
             + $"配置路径：{resource.SourcePath}\r\n依赖 Bundle：{resource.BundleIds.Count} 个\r\n"
             + $"关联：{(resource.Association == AssociationKind.NameCandidate ? "名称候选，尚未确认对象和骨架" : "已支持的配置")}；未在本次工作台解码、适配或验证。\r\n"
             + $"依据：{resource.Evidence}\r\n来源：{catalog?.SourceDescription}\r\n{catalog?.CoverageNote}";
+        resourceDetails.AppendText($"\r\n兼容性：{catalog?.CompatibilityNote}");
     }
 
     private List<string> SelectedIds() => checkedResourceIds.ToList();
@@ -505,6 +518,7 @@ internal sealed class WorkspaceForm : Form
 
     private static string Describe(ExtractionPlan plan) =>
         $"角色：{plan.CharacterName} ({plan.CharacterId})\r\n游戏版本：{plan.GameBuild}\r\n"
+        + $"兼容性：{plan.CompatibilityNote}\r\n"
         + $"状态：仅计划，未执行\r\n输出工作区：{plan.Options.WorkspaceDirectory}\r\n"
         + $"选中 {plan.RequestedResourceIds.Count} 项；包含已收录模型／Avatar 后 {plan.Resources.Count} 项；Bundle 依赖展开后 {plan.Bundles.Count} 个。\r\n\r\n资源：\r\n"
         + string.Join("\r\n", plan.Resources.Select(resource => $"  [{KindText(resource.Kind)}] {resource.Name}"))
@@ -536,6 +550,14 @@ internal sealed class WorkspaceForm : Form
 
     private static string KindText(ResourceKind kind) => kind switch
     { ResourceKind.Model => "模型", ResourceKind.Avatar => "骨架", ResourceKind.Animation => "动作", _ => "未知" };
+    private static string CompatibilityText(string status) => status switch
+    {
+        "KnownReference" => "匹配历史参考版本，索引格式可读",
+        "FormatCompatibleUnverified" => "索引格式可读，新版本尚未验证",
+        "Unsupported" => "暂无适用格式适配器",
+        "Unreadable" => "数据或环境无法读取",
+        _ => "尚未检查当前安装版本"
+    };
     private static string StateText(StageState state) => state switch
     { StageState.Pending => "待执行", StageState.NotRequested => "未请求", StageState.Completed => "已完成", StageState.Failed => "失败", _ => "不支持" };
     private static Label Note(string text) => new() { Text = text, Dock = DockStyle.Fill, Padding = new Padding(0, 6, 0, 0), AutoEllipsis = true };

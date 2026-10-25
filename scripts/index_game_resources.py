@@ -20,16 +20,16 @@ import subprocess
 import sys
 import uuid
 
-from endfield_vfs import parse_blc_v4
-from endfield_manifest import EndfieldManifest
+from index_formats import ADAPTER_REVISION, UnsupportedIndexFormat, compatibility, parse_blc, parse_manifest
 
 ROOT = Path(__file__).resolve().parent.parent
-SCANNER_VERSION = "plaintext-candidates-v1"
+SCANNER_VERSION = "plaintext-candidates-v2"
 SIGNATURE = re.compile(
     rb"(?<![A-Za-z0-9_])(?:chr_[0-9]{3,6}_[a-z0-9]+_(?:uimodel|model)(?![a-z0-9_])"
     rb"|a_actor_[a-z0-9]+_[a-z0-9_]{1,180})(?![a-z0-9_])", re.IGNORECASE)
 BLOCK = 4 * 1024 * 1024
 OVERLAP = 512
+FAILURE_CONTEXT = {}
 
 
 def emit(message, progress=None, kind="log", **extra):
@@ -83,6 +83,7 @@ def read_indexes(vfs, cache):
         raise ValueError("没有发现可读取的 VFS BLC 索引。")
     records = []
     signatures = {}
+    formats = {}
     for position, (group, blc) in enumerate(groups):
         emit(f"读取 VFS 分组 {position + 1}/{len(groups)}：{group.name}", 3 + int(9 * position / len(groups)))
         before = blc.stat()
@@ -91,11 +92,12 @@ def read_indexes(vfs, cache):
         run_crypto(blc, decoded)
         version = struct.unpack("<I", blc.read_bytes()[:4])[0]
         group_records = []
-        parse_blc_v4(decoded.read_bytes(), sample_limit=0, file_visitor=group_records.append)
+        _, format_id = parse_blc(decoded.read_bytes(), group_records.append)
         after = blc.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise ValueError("游戏索引在读取期间发生变化，请等游戏更新完成后重新扫描。")
         signatures[group.name] = signature
+        formats[group.name] = format_id
         records.extend(dict(row, group=group.name, vfs_version=version) for row in group_records)
     unique = {}
     for row in records:
@@ -103,7 +105,7 @@ def read_indexes(vfs, cache):
         if key in unique and unique[key] != row:
             raise ValueError("同一 VFS 分组出现不一致的重复路径，无法可靠索引：" + row["name"])
         unique[key] = row
-    return list(unique.values()), signatures
+    return list(unique.values()), signatures, formats
 
 
 def read_manifest(records, vfs, cache):
@@ -131,7 +133,8 @@ def read_manifest(records, vfs, cache):
     compressed.write_bytes(payload)
     binary = cache / "manifest.bin"
     run_crypto("--brotli", compressed, binary)
-    return EndfieldManifest.from_path(binary), row["data_md5"]
+    manifest, format_id = parse_manifest(binary.read_bytes())
+    return manifest, row["data_md5"], format_id
 
 
 def file_signature(path, blc_signature):
@@ -270,6 +273,7 @@ def main():
     parser.add_argument("--game", required=True, type=Path)
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--probe-only", action="store_true", help="read and validate index formats without scanning CHK names")
     args = parser.parse_args()
     game = normalize_game(args.game.resolve())
     workspace = args.workspace.resolve()
@@ -278,14 +282,14 @@ def main():
     marker = workspace / "character-workspace.json"
     if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8-sig")).get("schema") != "endfield-character-workspace-v1":
         raise ValueError("请先通过角色工作台建立兼容工作区。")
-    emit("核对当前游戏版本…", 1)
+    emit("识别程序版本及索引格式…", 1)
     fingerprint = digest(game.parent / "GameAssembly.dll")
-    profile = json.loads((ROOT / "profiles/chen.json").read_text(encoding="utf-8-sig"))
-    if fingerprint != profile["game_assembly_sha256"]:
-        raise ValueError("游戏版本与当前索引解析器的已支持版本不同，已停止。")
-    cache = workspace / "index" / fingerprint[:16] / SCANNER_VERSION
-    cache.mkdir(parents=True, exist_ok=True)
-    lock = (cache / "scan.lock").open("a+b")
+    namespace = workspace / "index" / fingerprint / SCANNER_VERSION / ADAPTER_REVISION
+    namespace.mkdir(parents=True, exist_ok=True)
+    check_path = namespace / ("compatibility-" + uuid.uuid4().hex + ".json")
+    FAILURE_CONTEXT.update(report_path=check_path, fingerprint=fingerprint, phase="VFS formats")
+    # Serialize all versions of the scanner using the same workspace, including probes.
+    lock = (workspace / "index/scan.lock").open("a+b")
     if os.name == "nt":
         import msvcrt
         if lock.seek(0, 2) == 0:
@@ -296,8 +300,32 @@ def main():
         except OSError as error:
             raise ValueError("这个工作区已有索引任务在运行。") from error
     vfs = game / "StreamingAssets/VFS"
-    records, signatures = read_indexes(vfs, cache)
-    manifest, manifest_md5 = read_manifest(records, vfs, cache)
+    metadata = namespace / "metadata"
+    metadata.mkdir(exist_ok=True)
+    records, signatures, blc_formats = read_indexes(vfs, metadata)
+    FAILURE_CONTEXT["phase"] = "manifest format and references"
+    manifest, manifest_md5, manifest_format = read_manifest(records, vfs, metadata)
+    compatible = compatibility(fingerprint, manifest_md5, manifest.version, ROOT / "profiles/known_builds.json")
+    generation = hashlib.sha256(json.dumps({"blc": signatures, "manifest": manifest_md5,
+        "blcFormats": blc_formats, "manifestFormat": manifest_format}, sort_keys=True).encode()).hexdigest()
+    cache = namespace / "generations" / generation
+    cache.mkdir(parents=True, exist_ok=True)
+    probe_report = {"schema": "endfield-index-compatibility-v1", **compatible,
+        "gameAssemblySha256": fingerprint, "manifestMd5": manifest_md5, "manifestVersion": manifest.version,
+        "blcFormats": blc_formats, "manifestFormat": manifest_format, "adapterRevision": ADAPTER_REVISION,
+        "vfsGroups": len(signatures), "vfsRecords": len(records), "manifestBundles": manifest.bundle_count,
+        "cacheGeneration": generation, "decoded": False, "adapted": False, "verified": False,
+        "completedAt": datetime.now(timezone.utc).isoformat()}
+    # A successful probe must also represent a stable snapshot of current installation metadata.
+    assert_unchanged(vfs, signatures, game, fingerprint)
+    write_json(check_path, probe_report)
+    FAILURE_CONTEXT.update(phase="name discovery", report_path=namespace / ("failure-" + uuid.uuid4().hex + ".json"))
+    emit(compatible["note"], 16)
+    if args.probe_only:
+        emit("索引格式检查完成：" + compatible["note"], 100, "completed", catalog=None,
+             report=str(check_path), compatibilityStatus=compatible["status"])
+        lock.close()
+        return
     emit("资源清单已解析，准备扫描 Bundle 内的可见名称…", 16)
     grouped = defaultdict(list)
     for row in records:
@@ -336,15 +364,15 @@ def main():
     coverage = ("仅发现未加密 Bundle 中可见的 ASCII 模型／动作名称；压缩、加密、其他命名形式可能漏项。"
                 f"本次跳过 {encrypted} 条加密 Bundle 记录，{len(missing)} 个所需 CHK 不在本机。"
                 "名称关联未确认，不代表已解码或可播放。")
-    catalog, missing_deps = make_catalog(hits, records, manifest, fingerprint, profile["build"], manifest_md5, coverage)
+    catalog, missing_deps = make_catalog(hits, records, manifest, fingerprint, compatible["gameBuild"], manifest_md5, coverage)
+    catalog.update(compatibilityStatus=compatible["status"], compatibilityNote=compatible["note"])
     # Catch concurrent game updates before publishing a new index.
-    if any(digest(vfs / group / (group + ".blc")) != sha for group, sha in signatures.items()):
-        raise ValueError("扫描期间游戏索引有变化，未发布本次索引。")
-    if digest(game.parent / "GameAssembly.dll") != fingerprint:
-        raise ValueError("扫描期间游戏程序有变化，未发布本次索引。")
+    assert_unchanged(vfs, signatures, game, fingerprint)
     catalog_path, report_path = cache / "catalog.json", cache / "report.json"
     report = {"schema": "endfield-resource-discovery-report-v1", "status": "discovered",
-        "scannerVersion": SCANNER_VERSION, "gameBuild": profile["build"], "gameAssemblySha256": fingerprint,
+        "scannerVersion": SCANNER_VERSION, "gameBuild": compatible["gameBuild"], "gameAssemblySha256": fingerprint,
+        "compatibility": compatible, "compatibilityReport": str(check_path), "cacheGeneration": generation,
+        "blcFormats": blc_formats, "manifestFormat": manifest_format, "adapterRevision": ADAPTER_REVISION,
         "manifestMd5": manifest_md5, "manifestVersion": manifest.version, "vfsGroups": len(signatures),
         "vfsRecords": len(records), "scannedChunks": len(paths), "reusedChunks": reused,
         "scannedBytes": completed, "encryptedBundleRecordsSkipped": encrypted,
@@ -356,8 +384,20 @@ def main():
     write_json(report_path, report)
     write_json(catalog_path, catalog)
     emit(f"索引完成：{report['candidateCharacters']} 个角色名称候选，{report['candidateResources']} 项资源。",
-         100, "completed", catalog=str(catalog_path), report=str(report_path))
+         100, "completed", catalog=str(catalog_path), report=str(report_path), compatibilityStatus=compatible["status"])
     lock.close()
+
+
+def assert_unchanged(vfs, signatures, game, fingerprint):
+    current_groups = {path.name for path in vfs.iterdir() if path.is_dir()
+                      and not path.is_symlink()
+                      and (path / (path.name + ".blc")).is_file()}
+    if current_groups != set(signatures) or any(
+        digest(vfs / group / (group + ".blc")) != sha for group, sha in signatures.items()
+    ):
+        raise ValueError("读取期间游戏索引有变化，未发布本次结果。")
+    if digest(game.parent / "GameAssembly.dll") != fingerprint:
+        raise ValueError("读取期间游戏程序有变化，未发布本次结果。")
 
 
 if __name__ == "__main__":
@@ -366,5 +406,15 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        emit(str(error), kind="error")
+        status = "Unsupported" if isinstance(error, UnsupportedIndexFormat) else "Unreadable"
+        report_path = FAILURE_CONTEXT.get("report_path")
+        if report_path:
+            try:
+                write_json(report_path, {"schema": "endfield-index-compatibility-v1", "status": status,
+                    "phase": FAILURE_CONTEXT.get("phase"), "message": str(error),
+                    "gameAssemblySha256": FAILURE_CONTEXT.get("fingerprint"),
+                    "verified": False, "completedAt": datetime.now(timezone.utc).isoformat()})
+            except OSError:
+                report_path = None
+        emit(str(error), kind="error", report=str(report_path) if report_path else None, compatibilityStatus=status)
         raise SystemExit(1)
