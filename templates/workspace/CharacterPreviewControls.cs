@@ -73,6 +73,12 @@ public sealed class CharacterPreviewControls : MonoBehaviour
         animator.Update(0);
     }
 
+    public void SelectClip(int index) { Select(index); }
+    public void Restart() { Select(selected); }
+    public void SeekNormalized(float value) { Seek(value); }
+    public void SetPaused(bool value) { paused = value; if (ready && animator) animator.speed = paused ? 0 : speed; }
+    public void SetSpeed(float value) { speed = Mathf.Clamp(value, .1f, 2); if (ready && animator) animator.speed = paused ? 0 : speed; }
+
     void Seek(float normalized)
     {
         if (!ready) return;
@@ -113,15 +119,15 @@ public sealed class CharacterPreviewControls : MonoBehaviour
             GUILayout.Label((selected + 1) + " / " + clips.Length + "   " + clips[selected].name);
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("上一个")) Select(selected - 1);
-            if (GUILayout.Button(paused ? "继续" : "暂停")) { paused = !paused; animator.speed = paused ? 0 : speed; }
-            if (GUILayout.Button("重播")) Select(selected);
+            if (GUILayout.Button(paused ? "继续" : "暂停")) SetPaused(!paused);
+            if (GUILayout.Button("重播")) Restart();
             if (GUILayout.Button("下一个")) Select(selected + 1);
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("速度 " + speed.ToString("0.00") + "×", GUILayout.Width(105));
             float nextSpeed = GUILayout.HorizontalSlider(speed, .1f, 2);
-            if (!Mathf.Approximately(nextSpeed, speed)) { speed = nextSpeed; animator.speed = paused ? 0 : speed; }
+            if (!Mathf.Approximately(nextSpeed, speed)) SetSpeed(nextSpeed);
             GUILayout.EndHorizontal();
             float time = NormalizedTime();
             GUILayout.Label((time * clips[selected].length).ToString("0.00") + " / " + clips[selected].length.ToString("0.00") + " 秒"

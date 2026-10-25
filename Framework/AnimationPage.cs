@@ -77,6 +77,11 @@ internal sealed partial class WorkspaceForm
             adaptationDetails.AppendText("\r\n预览场景：" + scene + "\r\n在当前项目的 Unity Project 窗口打开此场景，点击 Play 后在 Game 视图切换、暂停或重播。\r\n");
         })));
         actions.Controls.Add(ActionButton("查看使用说明", () => RunAction(() => OpenLocal(Path.Combine(AppContext.BaseDirectory, "docs", "动画适配说明.md")))));
+        actions.Controls.Add(ActionButton("查看诊断报告", () => RunAction(() =>
+        {
+            if (inventoryTask == null) throw new InvalidDataException("请先载入任务。");
+            OpenLocal(UnityDiagnosticReport.Export(inventoryTask));
+        })));
         foreach (Control action in actions.Controls) objectActions.Add(action);
         layout.Controls.Add(actions, 0, 3); layout.Controls.Add(adaptationDetails, 0, 4); page.Controls.Add(layout);
         adaptationDetails.Text = "默认模型与动画倍率均为 1；只有当前已收录且版本、模型标识匹配的陈千语配置预填模型倍率 100。\r\n其他角色请明确确认单位。当前只生成 Generic 直接骨骼动画，不进行 Humanoid 重定向、IK 或游戏修正骨骼求解。\r\n自动导入使用已保存计划中的项目与编辑器路径，不创建新项目；“读取 Unity 适配结果”仍可单独使用，不启动 Unity。";

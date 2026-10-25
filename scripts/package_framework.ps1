@@ -136,9 +136,15 @@ New-Item -ItemType Directory -Path $verificationSource -Force | Out-Null
 foreach ($file in @('Program.cs', 'WorkspaceExportVerification.csproj')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceExportVerification\' + $file)) -Destination (Join-Path $verificationSource $file) -Force
 }
+$adaptationVerification = Join-Path $packageRoot 'sources\verification\WorkspaceAdaptationVerification'
+New-Item -ItemType Directory -Path $adaptationVerification -Force | Out-Null
+foreach ($file in @('Program.cs', 'WorkspaceAdaptationVerification.csproj')) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceAdaptationVerification\' + $file)) -Destination (Join-Path $adaptationVerification $file) -Force
+}
+Copy-Item -LiteralPath (Join-Path $repoRoot 'sources\verification\UnityPreviewVerification.cs') -Destination (Join-Path $packageRoot 'sources\verification\UnityPreviewVerification.cs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.9.0-animation-preview-scene'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.10.0-diagnostics-preview'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

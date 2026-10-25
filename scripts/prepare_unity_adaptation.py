@@ -54,7 +54,7 @@ def prepare_unity_package(state, selection, model, clips):
         copy(exported["output"], relative)
         definitions.append({"id": row["key"], "name": row["name"], "source": relative})
     config = {"schema": "endfield-unity-adaptation-config-v1", "taskId": state["result"]["taskId"],
-        "runId": state["result"]["runId"], "adapterVersion": "0.9.0", "modelKey": model["key"],
+        "runId": state["result"]["runId"], "adapterVersion": "0.10.0", "modelKey": model["key"],
         "model": "Model/" + Path(model_report["fbx"]).relative_to(run / "exports/model").as_posix(),
         "modelImportScale": rules["modelImportScale"],
         "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes")},

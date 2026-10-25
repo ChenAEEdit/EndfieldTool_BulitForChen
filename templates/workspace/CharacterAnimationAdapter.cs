@@ -42,6 +42,17 @@ public static class CharacterAnimationAdapter
         public string[] unmatched = new string[0];
     }
     [Serializable] public class OutputFile { public string path, sha256; public long bytes; }
+    [Serializable] public class MaterialMetadata { public MaterialDescription[] materials; }
+    [Serializable] public class MaterialDescription { public string name; public TextureSlot[] texture_slots; }
+    [Serializable] public class TextureSlot { public string slot, exported_png; public UV offset, scale; }
+    [Serializable] public class UV { public float X, Y; }
+    [Serializable] public class MaterialPreview { public string source, output, baseMap; public bool textured; }
+    [Serializable] public class Diagnostics
+    {
+        public int meshes, vertices, bones, missingBones, unweightedVertices, invalidWeights, nonNormalizedVertices, nonFiniteVertices, duplicatePaths, missingBaseMaps;
+        public bool geometryPassed;
+        public string[] warnings;
+    }
     [Serializable] public class BuildReport
     {
         public string schema = "endfield-unity-adaptation-v1", taskId, runId, configSha256, unityVersion, status, error, invocationId;
@@ -51,6 +62,9 @@ public static class CharacterAnimationAdapter
         public ClipReport[] clips;
         public OutputFile[] outputs;
         public OutputFile[] metadata;
+        public MaterialPreview[] materials = new MaterialPreview[0];
+        public Diagnostics diagnostics;
+        public float modelImportScale, positionScale;
     }
 
     [Serializable] public class BatchReceipt
@@ -201,7 +215,8 @@ public static class CharacterAnimationAdapter
             || basePath != "Assets/EndfieldCharacterExports/" + task.ToString("N").Substring(0, 8) + "_" + config.runId)
             throw new Exception("适配配置与目录归属不符。");
         var report = new BuildReport { taskId = config.taskId, runId = config.runId,
-            configSha256 = Hash(configPath), unityVersion = Application.unityVersion, status = "running", invocationId = invocationId };
+            configSha256 = Hash(configPath), unityVersion = Application.unityVersion, status = "running", invocationId = invocationId,
+            modelImportScale = config.modelImportScale, positionScale = config.rules.positionScale };
         string generated = basePath + "/Generated", reportPath = generated + "/adaptation-result.json";
         Directory.CreateDirectory(generated);
         if (Directory.EnumerateFileSystemEntries(generated).Any(path => Directory.Exists(path)
@@ -231,6 +246,9 @@ public static class CharacterAnimationAdapter
             root.name = "Character"; root.transform.localPosition = Vector3.zero;
             var avatar = AssetDatabase.LoadAllAssetsAtPath(modelPath).OfType<Avatar>().SingleOrDefault(item => item.isValid && !item.isHuman);
             if (!avatar) throw new Exception("模型没有有效的 Generic Avatar。");
+            report.materials = PrepareMaterials(root, basePath, generated, outputs);
+            report.diagnostics = Diagnose(root, report.materials);
+            if (!report.diagnostics.geometryPassed) throw new Exception("模型诊断发现非法骨骼、权重、路径或顶点，请查看诊断报告。");
             string controllerPath = generated + "/Character.controller";
             var controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath); outputs.Add(controllerPath);
             foreach (var input in config.clips)
@@ -272,7 +290,7 @@ public static class CharacterAnimationAdapter
             report.status = report.adapted ? "adapted_unverified" : "partial";
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             report.outputs = outputs.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
-            if (config.adapterVersion == "0.9.0")
+            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0")
             {
                 var metadataPaths = config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs).Concat(new[] {
                     "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs",
@@ -292,10 +310,101 @@ public static class CharacterAnimationAdapter
         Debug.Log("原生动画适配完成；尚未验证播放。结果：" + reportPath);
     }
 
+    static MaterialPreview[] PrepareMaterials(GameObject root, string basePath, string generated, List<string> outputs)
+    {
+        string model = basePath + "/Model", metadata = model + "/material_properties.json";
+        if (!File.Exists(metadata)) throw new Exception("缺少真实材质属性，无法确认基础贴图映射。");
+        var definitions = JsonUtility.FromJson<MaterialMetadata>(File.ReadAllText(metadata)).materials;
+        var created = new Dictionary<string, Material>(); var report = new List<MaterialPreview>();
+        string folder = generated + "/Materials"; Directory.CreateDirectory(folder);
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
+        {
+            var materials = renderer.sharedMaterials;
+            for (int i = 0; i < materials.Length; i++)
+            {
+                string name = materials[i] ? materials[i].name : "MissingMaterial";
+                if (!created.TryGetValue(name, out var material))
+                {
+                    var definition = definitions.SingleOrDefault(item => item.name == name);
+                    var slot = definition == null ? null : (definition.texture_slots ?? new TextureSlot[0]).FirstOrDefault(item =>
+                        (item.slot == "_BaseMap" || item.slot == "_MainTex") && !string.IsNullOrEmpty(item.exported_png));
+                    string texturePath = slot == null ? null : model + "/" + Path.GetFileName(slot.exported_png);
+                    var texture = texturePath == null ? null : AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                    var shader = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline
+                        ? Shader.Find("Universal Render Pipeline/Lit") : Shader.Find("Standard");
+                    if (!shader) throw new Exception("找不到适用的基础预览 Shader。");
+                    material = new Material(shader) { name = name, color = Color.white, mainTexture = texture };
+                    if (material.HasProperty("_BaseMap")) material.SetTexture("_BaseMap", texture);
+                    if (slot != null && slot.scale != null) material.mainTextureScale = new Vector2(slot.scale.X, slot.scale.Y);
+                    if (slot != null && slot.offset != null) material.mainTextureOffset = new Vector2(slot.offset.X, slot.offset.Y);
+                    if (material.HasProperty("_Glossiness")) material.SetFloat("_Glossiness", .05f);
+                    if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", .05f);
+                    bool overlay = name.IndexOf("eyeshadow", StringComparison.OrdinalIgnoreCase) >= 0
+                        || name.IndexOf("eyewhiteshadow", StringComparison.OrdinalIgnoreCase) >= 0
+                        || name.IndexOf("hairshadow", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (overlay)
+                    {
+                        material.mainTexture = null; material.color = new Color(.08f, .06f, .045f, .16f);
+                        if (material.HasProperty("_BaseMap")) material.SetTexture("_BaseMap", null);
+                        if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", material.color);
+                        if (material.HasProperty("_Mode")) material.SetFloat("_Mode", 3);
+                        if (material.HasProperty("_Surface")) material.SetFloat("_Surface", 1);
+                        material.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                        material.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                        material.SetInt("_ZWrite", 0); material.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+                        material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT"); material.renderQueue = 3000;
+                    }
+                    string path = folder + "/Material_" + report.Count + ".mat";
+                    AssetDatabase.CreateAsset(material, path); outputs.Add(path); created.Add(name, material);
+                    report.Add(new MaterialPreview { source = name, output = path, baseMap = texturePath, textured = texture && !overlay });
+                }
+                materials[i] = material;
+            }
+            renderer.sharedMaterials = materials;
+        }
+        return report.ToArray();
+    }
+
+    static Diagnostics Diagnose(GameObject root, MaterialPreview[] materials)
+    {
+        var result = new Diagnostics(); var warnings = new List<string>(); var bones = new HashSet<Transform>();
+        var paths = root.GetComponentsInChildren<Transform>(true).Select(item => AnimationUtility.CalculateTransformPath(item, root.transform)).ToArray();
+        result.duplicatePaths = paths.Length - paths.Distinct().Count();
+        foreach (var skin in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            var mesh = skin.sharedMesh; if (!mesh) { result.missingBones++; continue; }
+            result.meshes++; result.vertices += mesh.vertexCount;
+            foreach (var bone in skin.bones) { if (bone) bones.Add(bone); else result.missingBones++; }
+            foreach (var vertex in mesh.vertices) if (!Finite(vertex.x) || !Finite(vertex.y) || !Finite(vertex.z)) result.nonFiniteVertices++;
+            var weights = mesh.boneWeights;
+            if (weights.Length != mesh.vertexCount) result.unweightedVertices += mesh.vertexCount;
+            foreach (var weight in weights)
+            {
+                var values = new[] { weight.weight0, weight.weight1, weight.weight2, weight.weight3 };
+                var indices = new[] { weight.boneIndex0, weight.boneIndex1, weight.boneIndex2, weight.boneIndex3 };
+                if (values.Sum() <= .00000001f) result.unweightedVertices++;
+                else if (Math.Abs(values.Sum() - 1) > .01f) result.nonNormalizedVertices++;
+                for (int i = 0; i < 4; i++) if (!Finite(values[i]) || values[i] < 0 || values[i] > 1
+                    || values[i] > 0 && (indices[i] < 0 || indices[i] >= skin.bones.Length)) result.invalidWeights++;
+            }
+        }
+        result.bones = bones.Count; result.missingBaseMaps = materials.Count(item => !item.textured);
+        if (result.missingBaseMaps > 0) warnings.Add("部分材质使用基础替代或缺少基础贴图，请查看材质映射记录。");
+        warnings.Add("权重检查针对 Unity 当前最多四影响的导入结果；未复原游戏 Shader、布料和 IK。");
+        result.geometryPassed = result.meshes > 0 && result.missingBones == 0 && result.unweightedVertices == 0
+            && result.invalidWeights == 0 && result.nonNormalizedVertices == 0 && result.nonFiniteVertices == 0 && result.duplicatePaths == 0;
+        result.warnings = warnings.ToArray(); return result;
+    }
+
     static void CreatePreview(string prefabPath, List<ClipReport> clips, string scenePath)
     {
         var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-        var preview = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+        // Batch startup can contain an empty untitled scene, which Unity refuses to extend additively.
+        // Replacing that empty startup scene is safe; interactive scenes keep the additive path.
+        bool emptyBatchStartup = Application.isBatchMode && active.IsValid() && string.IsNullOrEmpty(active.path)
+            && active.rootCount == 0;
+        var preview = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, emptyBatchStartup ? NewSceneMode.Single : NewSceneMode.Additive);
         try
         {
             UnityEngine.SceneManagement.SceneManager.SetActiveScene(preview);

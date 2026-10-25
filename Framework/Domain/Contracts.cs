@@ -222,6 +222,7 @@ public sealed record ObjectOperationResult
     public int ExpectedAdaptedClips { get; init; }
     public string? UnityReportPath { get; init; }
     public string? UnityPreviewScene { get; init; }
+    public string? DiagnosticReportPath { get; init; }
     public bool Adapted { get; init; }
     public bool PlaybackVerified { get; init; }
     public List<ObjectOutputFile> Files { get; init; } = [];

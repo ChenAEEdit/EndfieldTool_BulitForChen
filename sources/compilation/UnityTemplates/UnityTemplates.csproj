@@ -9,6 +9,7 @@
   <!-- Compile only: does not start Unity or execute the templates. -->
   <ItemGroup>
     <Compile Include="../../../templates/workspace/*.cs" />
+    <Compile Include="$(AdditionalVerificationSource)" Condition="'$(AdditionalVerificationSource)' != ''" />
     <Reference Include="$(UnityEditorDirectory)/Data/Managed/UnityEngine/*.dll" />
     <Reference Include="$(UnityEditorDirectory)/Data/Managed/UnityEditor/*.dll" />
   </ItemGroup>

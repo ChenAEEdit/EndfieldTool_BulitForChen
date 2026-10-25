@@ -78,7 +78,7 @@ public static class UnityAdaptationResults
             || report.Clips.Count != result.ExpectedAdaptedClips || report.Clips.Any(row => !row.Adapted))
             throw new InvalidDataException("Unity 适配未完成，或结果不属于本次适配包；请查看 Unity 报告。");
         bool preview = config.Preview?.Enabled == true;
-        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
+        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) + report.Materials.Count || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
             throw new InvalidDataException("Unity 适配输出不完整或重复。");
         var outputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in report.Outputs)
@@ -103,7 +103,15 @@ public static class UnityAdaptationResults
             || !outputPaths.Contains(previewPath!) || config.Clips.Any(clip => report.Clips.All(native =>
                 native.Output != result.UnityAssetRoot + "/Generated/Clip_" + clip.Id + ".anim" || native.State != "Base Layer.Clip_" + clip.Id))))
             throw new InvalidDataException("预览场景或可切换动画状态不完整。");
-        if (config.AdapterVersion == "0.9.0")
+        var materialPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var material in report.Materials)
+        {
+            string path = UnityProjectFiles.Within(project, material.Output);
+            if (!path.StartsWith(Path.Combine(generated, "Materials") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || Path.GetExtension(path) != ".mat" || !outputPaths.Contains(path) || !materialPaths.Add(path))
+                throw new InvalidDataException("生成的预览材质路径无效或重复。");
+        }
+        if (config.AdapterVersion is "0.9.0" or "0.10.0")
         {
             var metadata = inputPaths.Concat(outputPaths).Concat(new[] {
                 UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs"),
@@ -124,7 +132,7 @@ public static class UnityAdaptationResults
             throw new InvalidDataException("读取期间适配报告、配置或任务发生变化，请重新读取。");
         token.ThrowIfCancellationRequested();
         result = result with { Status = "adapted_unverified", Adapted = true, PlaybackVerified = false,
-            UnityReportPath = reportPath, UnityPreviewScene = previewPath,
+            UnityReportPath = reportPath, UnityPreviewScene = previewPath, DiagnosticReportPath = UnityDiagnosticReport.Export(saved),
             Message = $"已读取 Unity 原生适配结果：{report.Clips.Count} 条动画" + (preview ? "及独立预览场景" : "") + "；尚未验证播放。" };
         JsonFiles.Write(Path.Combine(taskRoot, "objects", result.RunId, "operation.json"), result);
         JsonFiles.Write(Path.Combine(taskRoot, "objects", "preparation.json"), result);
@@ -165,6 +173,7 @@ public static class UnityAdaptationResults
         public List<NativeClip> Clips { get; init; } = [];
         public List<ObjectOutputFile> Outputs { get; init; } = [];
         public List<ObjectOutputFile> Metadata { get; init; } = [];
+        public List<NativeMaterial> Materials { get; init; } = [];
     }
     private sealed record NativeClip
     {
@@ -173,4 +182,5 @@ public static class UnityAdaptationResults
         public string Output { get; init; } = "";
         public string State { get; init; } = "";
     }
+    private sealed record NativeMaterial { public string Output { get; init; } = ""; }
 }

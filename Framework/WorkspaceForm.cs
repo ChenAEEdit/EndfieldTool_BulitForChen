@@ -47,7 +47,7 @@ internal sealed partial class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 动画预览场景 0.9.0";
+        Text = "终末地角色工作台 · 诊断预览 0.10.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
