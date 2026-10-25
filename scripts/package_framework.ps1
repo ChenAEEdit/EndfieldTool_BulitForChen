@@ -66,11 +66,12 @@ foreach ($folder in @('profiles', 'runtime', 'templates', 'scripts', 'licenses',
 foreach ($file in Get-ChildItem -LiteralPath $cryptoRoot -File) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packageRoot ('runtime\crypto\' + $file.Name)) -Force
 }
-foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py')) {
+foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $packageRoot ('scripts\' + $file)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'profiles\known_builds.json') -Destination (Join-Path $packageRoot 'profiles\known_builds.json') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'Crypto\Program.cs') -Destination (Join-Path $packageRoot 'sources\crypto\Program.cs') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'Crypto\BundleExtractor.cs') -Destination (Join-Path $packageRoot 'sources\crypto\BundleExtractor.cs') -Force
 foreach ($file in Get-ChildItem -LiteralPath $compiledRoot -File) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $packageRoot $file.Name) -Force
 }
@@ -83,6 +84,6 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'Framework') -Destination $guiSource
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.4.0-format-preview'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.5.0-bundle-preview'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

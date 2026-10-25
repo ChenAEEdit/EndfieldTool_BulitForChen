@@ -16,7 +16,9 @@ public static class JsonFiles
     {
         if (new FileInfo(path).Length > 256 * 1024 * 1024)
             throw new InvalidDataException("文件超过当前工作台允许的 256 MB，请缩小索引或任务文件。");
-        return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Options)
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return JsonSerializer.Deserialize<T>(reader.ReadToEnd(), Options)
             ?? throw new InvalidDataException("JSON 文件内容为空。");
     }
 
@@ -77,7 +79,8 @@ public sealed class TaskPlanner : ITaskPlanner
             Stages = [
                 new("版本与依赖校验", StageState.Pending, $"执行时重新校验游戏摘要及依赖；当前有 {missing} 项缺失或不明确的依赖记录。"),
                 new("角色与骨架确认", candidates ? StageState.Pending : StageState.NotRequested, "明文名称候选必须先解析对象、根节点和 Avatar，不能直接视为已适配角色。"),
-                new("提取与解码", StageState.Pending, "通用提取执行器尚未接入，本次仅保存计划。"),
+                new("Bundle 提取", StageState.Pending, "执行时导出 Bundle 与清单依赖并校验 MD5。"),
+                new("模型／动画对象解码", StageState.Unsupported, "当前执行器只提取 Bundle，不生成 FBX 或 .anim。"),
                 new("动画适配", selected.Any(resource => resource.Kind == ResourceKind.Animation) ? StageState.Pending : StageState.NotRequested, "按所选片段确认单位、路径和播放方式。"),
                 new("骨骼权重检查", options.CheckWeights ? StageState.Pending : StageState.NotRequested, "未运行检查。"),
                 new("Unity 预览", options.ImportUnity ? StageState.Pending : StageState.NotRequested, "未写入 Unity 项目。"),

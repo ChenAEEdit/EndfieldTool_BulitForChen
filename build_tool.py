@@ -139,6 +139,6 @@ for folder in ("profiles", "templates", "scripts", "runtime", "licenses", "sourc
 for file in ("Program.cs", "EndfieldChenTool.csproj", "NuGet.Config", "build_tool.py"):
     copy(ROOT / file, PACKAGE / "sources/gui" / file)
 shutil.copytree(ROOT / "Framework", PACKAGE / "sources/gui/Framework", dirs_exist_ok=True)
-for file in ("Program.cs", "VfsCrypto.csproj"):
+for file in ("Program.cs", "VfsCrypto.csproj", "BundleExtractor.cs"):
     copy(ROOT / "Crypto" / file, PACKAGE / "sources/crypto" / file)
 print(f"PACKAGED {PACKAGE} / bundles={len(profile['bundles'])}")

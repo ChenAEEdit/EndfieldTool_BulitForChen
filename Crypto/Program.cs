@@ -3,6 +3,8 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.IO.Compression;
 
+if (args.Length > 0 && args[0] == "--extract") return BundleExtractor.Execute(args);
+
 if (args is ["--brotli", var compressed, var destination])
 {
     var bytes = File.ReadAllBytes(compressed);

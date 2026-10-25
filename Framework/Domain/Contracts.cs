@@ -111,10 +111,46 @@ public interface ITaskPlanner
         IReadOnlyCollection<string> resourceIds, WorkspaceOptions options);
 }
 
-// Execution plugs in here in the next milestone; the framework supplies no fake executor.
+public sealed record ExtractionProgress(string Message, int Percent);
+
+public sealed record ExtractedBundleFile
+{
+    public string Group { get; init; } = "";
+    public string VirtualPath { get; init; } = "";
+    public string Path { get; init; } = "";
+    public string Md5 { get; init; } = "";
+    public long Length { get; init; }
+    public bool Cached { get; init; }
+}
+
+public sealed record BundleExtractionResult
+{
+    public string Schema { get; init; } = "endfield-bundle-extraction-v1";
+    public Guid TaskId { get; init; }
+    public string RunId { get; init; } = "";
+    public string Status { get; init; } = "running";
+    public string Message { get; init; } = "";
+    public DateTimeOffset StartedAt { get; init; }
+    public DateTimeOffset? FinishedAt { get; init; }
+    public string OutputDirectory { get; init; } = "";
+    public int TotalBundles { get; init; }
+    public int ExtractedFiles { get; init; }
+    public int ReusedFiles { get; init; }
+    public string BundleExtraction { get; init; } = "running";
+    public string ObjectDecoding { get; init; } = "not_implemented";
+    public string AnimationAdaptation { get; init; } = "not_implemented";
+    public string Weights { get; init; } = "not_run";
+    public string UnityPreview { get; init; } = "not_run";
+    public string PlaybackVerification { get; init; } = "not_run";
+    public List<ExtractedBundleFile> Files { get; init; } = [];
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; init; }
+}
+
 public interface IExtractionBackend
 {
     string Id { get; }
     bool Supports(ExtractionPlan plan);
-    Task ExecuteAsync(ExtractionPlan plan, IProgress<StageRecord> progress, CancellationToken cancellationToken);
+    Task<BundleExtractionResult> ExecuteAsync(SavedPlan saved, IProgress<ExtractionProgress> progress,
+        CancellationToken cancellationToken);
 }

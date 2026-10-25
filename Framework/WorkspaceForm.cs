@@ -27,6 +27,9 @@ internal sealed class WorkspaceForm : Form
     private readonly WorkspaceStore store = new();
     private readonly ITaskPlanner planner = new TaskPlanner();
     private readonly IGameResourceIndexer indexer = new GameResourceIndexer();
+    private readonly IExtractionBackend extractor = new BundleExtractionBackend();
+    private readonly Button executeExtraction = new() { Text = "执行 Bundle 提取", Width = 185, Height = 35 };
+    private readonly Button resumeExtraction = new() { Text = "继续／重试提取", Width = 160, Height = 35 };
     private readonly Button scan = new() { Text = "扫描游戏资源", Width = 145, Height = 35 };
     private readonly Button probe = new() { Text = "检查索引兼容性", Width = 135, Height = 35 };
     private readonly Button stopScan = new() { Text = "取消扫描", Width = 95, Height = 35, Enabled = false };
@@ -36,6 +39,7 @@ internal sealed class WorkspaceForm : Form
     private readonly List<Control> catalogActions = [];
     private readonly System.Windows.Forms.Timer searchTimer = new() { Interval = 250 };
     private CancellationTokenSource? scanCancellation;
+    private CancellationTokenSource? extractionCancellation;
     private string? latestIndexReport;
     private bool updatePlanQueued, closeAfterScan, loadingResources;
     private ResourceCatalog? catalog;
@@ -43,7 +47,7 @@ internal sealed class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 格式兼容预览 0.4.0";
+        Text = "终末地角色工作台 · Bundle 提取预览 0.5.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
@@ -107,14 +111,18 @@ internal sealed class WorkspaceForm : Form
         verifyPlayback.Enabled = importUnity.Checked;
         scan.Click += async (_, _) => await ScanGameAsync();
         probe.Click += async (_, _) => await ScanGameAsync(probeOnly: true);
-        stopScan.Click += (_, _) => scanCancellation?.Cancel();
+        executeExtraction.Click += async (_, _) => await ExecutePlanAsync(resume: false);
+        resumeExtraction.Click += async (_, _) => await ExecutePlanAsync(resume: true);
+        stopScan.Text = "取消任务";
+        stopScan.Click += (_, _) => { scanCancellation?.Cancel(); extractionCancellation?.Cancel(); };
         FormClosing += (_, e) =>
         {
-            if (scanCancellation == null) return;
+            if (scanCancellation == null && extractionCancellation == null) return;
             e.Cancel = true;
             closeAfterScan = true;
-            scanCancellation.Cancel();
-            status.Text = "正在停止扫描并关闭，已完成的缓存保留。";
+            scanCancellation?.Cancel();
+            extractionCancellation?.Cancel();
+            status.Text = "正在停止任务并关闭，完整输出保留。";
         };
         FormClosed += (_, _) => searchTimer.Dispose();
         RunAction(LoadSupportedCatalog);
@@ -174,32 +182,34 @@ internal sealed class WorkspaceForm : Form
 
     private void BuildScanPage()
     {
-        var page = Page("扫描记录");
+        var page = Page("运行日志");
         var layout = Grid(1, 3);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-        layout.Controls.Add(Note("扫描只读游戏文件；工作区保存索引、清单与可续扫缓存。取消后当前文件需重新扫描，之前完成的文件可以复用。"), 0, 0);
+        layout.Controls.Add(Note("扫描和提取只读游戏文件；输出保存在工作区。取消后当前文件重新处理，完整输出重新校验后可复用。"), 0, 0);
         layout.Controls.Add(scanLog, 0, 1);
         var actions = Flow();
-        actions.Controls.Add(ActionButton("打开本次检查报告", () => RunAction(() =>
+        actions.Controls.Add(ActionButton("打开当前结果报告", () => RunAction(() =>
         {
-            if (latestIndexReport == null) throw new InvalidDataException("本次还没有完成的索引报告。");
+            if (latestIndexReport == null) throw new InvalidDataException("当前任务还没有结果报告。");
             OpenLocal(latestIndexReport);
         })));
         actions.Controls.Add(ActionButton("返回资源列表", () => pages.SelectedIndex = 0));
+        actions.Controls.Add(ActionButton("取消当前任务", () => { scanCancellation?.Cancel(); extractionCancellation?.Cancel(); }));
         layout.Controls.Add(actions, 0, 2);
         page.Controls.Add(layout);
     }
 
     private async Task ScanGameAsync(bool probeOnly = false)
     {
-        if (scanCancellation != null) return;
+        if (scanCancellation != null || extractionCancellation != null) return;
         var options = CurrentOptions();
         var force = forceScan.Checked;
         using var cancellation = new CancellationTokenSource();
         scanCancellation = cancellation;
         scan.Enabled = probe.Enabled = forceScan.Enabled = false;
+        executeExtraction.Enabled = resumeExtraction.Enabled = false;
         stopScan.Enabled = true;
         foreach (var action in catalogActions) action.Enabled = false;
         pages.TabPages[3].Enabled = false;
@@ -250,6 +260,7 @@ internal sealed class WorkspaceForm : Form
         {
             scanCancellation = null;
             scan.Enabled = probe.Enabled = forceScan.Enabled = true;
+            executeExtraction.Enabled = resumeExtraction.Enabled = true;
             stopScan.Enabled = false;
             foreach (var action in catalogActions) action.Enabled = true;
             pages.TabPages[3].Enabled = true;
@@ -268,7 +279,7 @@ internal sealed class WorkspaceForm : Form
         layout.Controls.Add(planDetails, 0, 1);
         var actions = Flow();
         actions.Controls.Add(ActionButton("保存提取计划", () => RunAction(SavePlan)));
-        actions.Controls.Add(new Button { Text = "执行提取（待接入）", Enabled = false, Width = 180, Height = 35 });
+        actions.Controls.Add(executeExtraction);
         actions.Controls.Add(ActionButton("调整环境与选项 →", () => pages.SelectedIndex = 3));
         layout.Controls.Add(actions, 0, 2);
         page.Controls.Add(layout);
@@ -279,10 +290,10 @@ internal sealed class WorkspaceForm : Form
         var page = Page("任务记录");
         var layout = Grid(1, 4);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 51));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 85));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        layout.Controls.Add(Note("这里显示当前工作区保存的计划。框架尚无执行结果，计划不能作为提取或验证成功的证据。"), 0, 0);
+        layout.Controls.Add(Note("提取所选 Bundle 与清单依赖，可取消后继续。结果中的 Bundle 完成不代表 FBX、动画或 Unity 预览已生成。"), 0, 0);
         var actions = Flow();
         actions.Controls.Add(ActionButton("读取工作区任务", () => RunAction(RefreshTasks)));
         actions.Controls.Add(ActionButton("打开所选计划文件", () => RunAction(() =>
@@ -290,6 +301,16 @@ internal sealed class WorkspaceForm : Form
             if (tasks.SelectedItems.Count == 0) throw new InvalidDataException("请先选择一个任务。");
             OpenLocal(((SavedPlan)tasks.SelectedItems[0].Tag!).FilePath);
         })));
+        actions.Controls.Add(resumeExtraction);
+        actions.Controls.Add(ActionButton("取消提取", () => extractionCancellation?.Cancel()));
+        actions.Controls.Add(ActionButton("打开提取目录", () => RunAction(() =>
+        {
+            var folder = Path.Combine(Path.GetDirectoryName(SelectedTask().FilePath)!, "bundles");
+            if (!Directory.Exists(folder)) throw new InvalidDataException("该任务尚未生成 Bundle 目录。");
+            Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+        })));
+        actions.Controls.Add(ActionButton("打开提取结果", () => RunAction(() =>
+            OpenLocal(Path.Combine(Path.GetDirectoryName(SelectedTask().FilePath)!, "result.json")))));
         layout.Controls.Add(actions, 0, 1);
         layout.Controls.Add(tasks, 0, 2);
         layout.Controls.Add(taskDetails, 0, 3);
@@ -317,9 +338,11 @@ internal sealed class WorkspaceForm : Form
         AddPath(table, 4, "Blender", "blender", options.Blender, true);
         layout.Controls.Add(table, 0, 1);
         var flags = Flow();
-        importUnity.Checked = options.ImportUnity;
-        checkWeights.Checked = options.CheckWeights;
-        verifyPlayback.Checked = options.ImportUnity && options.VerifyPlayback;
+        importUnity.Text = "Unity 预览（待接入）";
+        checkWeights.Text = "权重检查（待接入）";
+        verifyPlayback.Text = "播放检查（待接入）";
+        importUnity.Checked = checkWeights.Checked = verifyPlayback.Checked = false;
+        importUnity.Enabled = checkWeights.Enabled = verifyPlayback.Enabled = false;
         flags.Controls.AddRange([importUnity, checkWeights, verifyPlayback]);
         foreach (Control control in flags.Controls) control.Margin = new Padding(4, 10, 25, 0);
         layout.Controls.Add(flags, 0, 2);
@@ -504,7 +527,8 @@ internal sealed class WorkspaceForm : Form
         {
             var row = new ListViewItem(saved.Plan.CharacterName) { Tag = saved };
             row.SubItems.Add(saved.Plan.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
-            row.SubItems.Add(saved.Plan.Status == "planned" ? "仅计划 · 未执行" : "外部记录 · 未核对");
+            try { row.SubItems.Add(ResultStatus(BundleExtractionBackend.ReadResult(saved)?.Status)); }
+            catch (Exception) { row.SubItems.Add("结果记录无法读取"); }
             tasks.Items.Add(row);
         }
         status.Text = $"读取了 {entries.Count} 条任务计划。";
@@ -512,18 +536,110 @@ internal sealed class WorkspaceForm : Form
 
     private void ShowTask()
     {
-        taskDetails.Text = tasks.SelectedItems.Count == 0 ? "" :
-            Describe(((SavedPlan)tasks.SelectedItems[0].Tag!).Plan) + "\r\n计划文件：" + ((SavedPlan)tasks.SelectedItems[0].Tag!).FilePath;
+        if (tasks.SelectedItems.Count == 0) { taskDetails.Clear(); return; }
+        var saved = SelectedTask();
+        try
+        {
+            var result = BundleExtractionBackend.ReadResult(saved);
+            taskDetails.Text = (result == null ? "尚无执行结果。\r\n" : DescribeResult(result))
+                + "\r\n计划文件：" + saved.FilePath + "\r\n\r\n" + Describe(saved.Plan);
+        }
+        catch (Exception error) { taskDetails.Text = "结果记录无法读取：" + error.Message; }
     }
+
+    private SavedPlan SelectedTask() => tasks.SelectedItems.Count == 0
+        ? throw new InvalidDataException("请先选择一个任务。") : (SavedPlan)tasks.SelectedItems[0].Tag!;
+
+    private async Task ExecutePlanAsync(bool resume)
+    {
+        if (scanCancellation != null || extractionCancellation != null) return;
+        SavedPlan saved;
+        try
+        {
+            saved = resume ? SelectedTask() : store.Save(MakePlan());
+            RefreshTasks();
+            foreach (ListViewItem row in tasks.Items)
+                if (((SavedPlan)row.Tag!).Plan.Id == saved.Plan.Id) row.Selected = true;
+        }
+        catch (Exception error) { status.Text = "无法开始提取：" + error.Message; return; }
+        using var cancellation = new CancellationTokenSource();
+        extractionCancellation = cancellation;
+        executeExtraction.Enabled = resumeExtraction.Enabled = false;
+        scan.Enabled = probe.Enabled = forceScan.Enabled = false;
+        stopScan.Enabled = true;
+        foreach (var action in catalogActions) action.Enabled = false;
+        pages.TabPages[3].Enabled = false;
+        scanProgress.Value = 0;
+        scanLog.Clear();
+        latestIndexReport = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "result.json");
+        pages.SelectedIndex = 2;
+        taskDetails.Text = "正在核对并提取 Bundle；模型和动画导出尚未执行。";
+        status.Text = "正在启动 Bundle 提取与校验…";
+        foreach (ListViewItem row in tasks.Items)
+            if (((SavedPlan)row.Tag!).Plan.Id == saved.Plan.Id) row.SubItems[2].Text = "准备提取";
+        try
+        {
+            var progress = new Progress<ExtractionProgress>(row =>
+            {
+                if (IsDisposed || !ReferenceEquals(extractionCancellation, cancellation) || cancellation.IsCancellationRequested) return;
+                status.Text = row.Message;
+                scanProgress.Value = row.Percent;
+                if (scanLog.TextLength > 150000) scanLog.Text = scanLog.Text[^75000..];
+                scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
+            });
+            var result = await extractor.ExecuteAsync(saved, progress, cancellation.Token);
+            status.Text = $"Bundle 提取完成：{result.TotalBundles} 个，新提取 {result.ExtractedFiles}，复用 {result.ReusedFiles}。";
+        }
+        catch (OperationCanceledException) { status.Text = "提取已取消；选择该任务后可继续，完整文件会重新校验后复用。"; }
+        catch (Exception error) { status.Text = "提取未完成：" + error.Message; }
+        finally
+        {
+            scanLog.AppendText(status.Text + Environment.NewLine);
+            extractionCancellation = null;
+            executeExtraction.Enabled = resumeExtraction.Enabled = true;
+            scan.Enabled = probe.Enabled = forceScan.Enabled = true;
+            stopScan.Enabled = false;
+            foreach (var action in catalogActions) action.Enabled = true;
+            pages.TabPages[3].Enabled = true;
+            var finalMessage = status.Text;
+            try
+            {
+                RefreshTasks();
+                foreach (ListViewItem row in tasks.Items)
+                    if (((SavedPlan)row.Tag!).Plan.Id == saved.Plan.Id) row.Selected = true;
+                ShowTask();
+                status.Text = finalMessage;
+            }
+            catch (Exception error) { status.Text = finalMessage + "；读取任务记录失败：" + error.Message; }
+            if (closeAfterScan) BeginInvoke(new Action(Close));
+        }
+    }
+
+    private static string ResultStatus(string? state) => state switch
+    {
+        "bundles_extracted" => "Bundle 已提取 · 待解析",
+        "running" => "处理中／中断待重试",
+        "cancelled" => "已取消 · 可继续",
+        "failed" => "未完成 · 可重试",
+        null => "仅计划 · 未执行",
+        _ => "未知结果状态"
+    };
+
+    private static string DescribeResult(BundleExtractionResult result) =>
+        $"执行状态：{ResultStatus(result.Status)}\r\n{result.Message}\r\n"
+        + $"文件：{result.Files.Count}/{result.TotalBundles}；新提取 {result.ExtractedFiles}，复用 {result.ReusedFiles}\r\n"
+        + $"目录：{result.OutputDirectory}\r\n模型／动画解码：未执行；权重、Unity 及播放检查：未执行。\r\n"
+        + string.Join("\r\n", result.Files.Take(200).Select(file => $"  [{(file.Cached ? "已校验复用" : "已提取校验")}] {file.Path}"))
+        + (result.Files.Count > 200 ? "\r\n其余文件见完整结果 JSON。\r\n" : "\r\n");
 
     private static string Describe(ExtractionPlan plan) =>
         $"角色：{plan.CharacterName} ({plan.CharacterId})\r\n游戏版本：{plan.GameBuild}\r\n"
         + $"兼容性：{plan.CompatibilityNote}\r\n"
-        + $"状态：仅计划，未执行\r\n输出工作区：{plan.Options.WorkspaceDirectory}\r\n"
+        + $"计划配置（实际执行状态见结果记录）\r\n输出工作区：{plan.Options.WorkspaceDirectory}\r\n"
         + $"选中 {plan.RequestedResourceIds.Count} 项；包含已收录模型／Avatar 后 {plan.Resources.Count} 项；Bundle 依赖展开后 {plan.Bundles.Count} 个。\r\n\r\n资源：\r\n"
         + string.Join("\r\n", plan.Resources.Select(resource => $"  [{KindText(resource.Kind)}] {resource.Name}"))
         + "\r\n\r\n执行阶段：\r\n" + string.Join("\r\n", plan.Stages.Select(stage => $"  {stage.Name}：{StateText(stage.State)}"))
-        + "\r\n\r\n通用执行器待接入；保存后不会启动游戏解析器、Blender 或 Unity。";
+        + "\r\n\r\n执行按钮只提取 Bundle 和清单依赖；对象解析、FBX／动画导出与 Unity 预览尚未接入。";
 
     private void RunAction(Action action)
     {
