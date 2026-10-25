@@ -50,6 +50,7 @@ public sealed class UnityAdaptationRunner
         catch (IOException error) { throw new IOException("当前任务正在提取、解析或导入，请稍后再试。", error); }
         try
         {
+            saved = UnityTaskTarget.Resolve(saved);
             preparation = UnityAdaptationResults.ValidatePreparation(saved);
             string invocation = Guid.NewGuid().ToString("N");
             string runRoot = Path.Combine(taskRoot, "objects", preparation.RunId, "unity-runs", invocation);
@@ -156,7 +157,15 @@ public sealed class UnityAdaptationRunner
                     if (process.HasExited) run = run with { ExitCode = process.ExitCode };
                 }
                 Publish("verify", "正在检查本次 Unity 回执、生成文件和摘要。", 85);
-                if (run.ExitCode != 0) throw new InvalidDataException($"Unity 未正常完成（退出码 {run.ExitCode}）。请查看本次日志。");
+                if (run.ExitCode != 0)
+                {
+                    UnityFailureSummary? summary = null;
+                    try { summary = UnityFailureSummary.Read(saved); }
+                    catch (Exception) { /* Diagnostic parsing must not hide the original Unity failure. */ }
+                    throw new InvalidDataException(summary == null
+                        ? $"Unity 未正常完成（退出码 {run.ExitCode}）。请在帮助与日志中查看本次日志。"
+                        : $"Unity 部分或全部动画未完成：{summary.ConvertedKeys.Count} 条已转换，{summary.Problems.Count} 条未完成。请查看页面中的失败项。");
+                }
                 if (!File.Exists(run.ReceiptPath))
                     throw new InvalidDataException("Unity 没有生成本次调用回执；可能是项目脚本编译、许可证或入口执行失败。退出码不足以确认成功。");
                 var receipt = JsonFiles.Read<NativeReceipt>(run.ReceiptPath);
@@ -195,7 +204,7 @@ public sealed class UnityAdaptationRunner
         return run;
     }
 
-    private static void ValidateProject(string project, string editor)
+    internal static void ValidateProject(string project, string editor)
     {
         UnityProjectFiles.NoLinks(project);
         string versionPath = UnityProjectFiles.Within(project, "ProjectSettings/ProjectVersion.txt");
@@ -209,7 +218,7 @@ public sealed class UnityAdaptationRunner
             throw new InvalidDataException($"Unity 编辑器版本与项目不一致（项目 {version.Groups[1].Value}，编辑器 {actual}），请核对计划设置。");
     }
 
-    private static void RequireClosedProject(string project)
+    internal static void RequireClosedProject(string project)
     {
         string path = UnityProjectFiles.Within(project, "Temp/UnityLockfile");
         if (!File.Exists(path)) return;

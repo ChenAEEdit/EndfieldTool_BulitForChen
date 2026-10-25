@@ -18,73 +18,136 @@ internal sealed partial class WorkspaceForm
     private readonly TextBox adaptationDetails = ReadOnlyText();
     private readonly Label adaptationHint = Note("");
 
+    private readonly Button retryConverted = new() { Text = "仅用已转换项重新生成", Dock = DockStyle.Fill, Height = 36, Enabled = false };
+    private readonly Button previewAction = new() { Text = "生成 Unity 预览", Dock = DockStyle.Fill, Height = 43 };
+
     private void BuildAnimationPage()
     {
-        var page = Page("动画适配");
-        var layout = Grid(1, 5);
-        foreach (var height in new[] { 90, 276, 100, 85 }) layout.RowStyles.Add(new(SizeType.Absolute, height));
+        var layout = Grid(1, 6);
+        layout.RowStyles.Add(new(SizeType.Absolute, 69));
+        layout.RowStyles.Add(new(SizeType.Absolute, 48));
+        layout.RowStyles.Add(new(SizeType.Absolute, 44));
+        layout.RowStyles.Add(new(SizeType.AutoSize));
         layout.RowStyles.Add(new(SizeType.Percent, 100));
+        layout.RowStyles.Add(new(SizeType.Absolute, 40));
         layout.Controls.Add(adaptationHint, 0, 0);
-        UpdateAdaptationHint();
+        previewAction.BackColor = Accent; previewAction.ForeColor = Color.White; previewAction.FlatStyle = FlatStyle.Flat;
+        previewAction.Click += async (_, _) => await RunWorkflowAsync("preview");
+        objectActions.Add(previewAction); layout.Controls.Add(previewAction, 0, 1);
+        var resultActions = Flow();
+        resultActions.Controls.Add(ActionButton("定位预览场景", () => RunAction(LocatePreview)));
+        resultActions.Controls.Add(ActionButton("查看本次日志", () => RunAction(() =>
+        {
+            var run = inventoryTask == null ? null : UnityAdaptationRunner.ReadLatest(inventoryTask);
+            if (run == null) throw new InvalidDataException("尚无 Unity 运行记录。");
+            ShowInlineLog(run.LogPath);
+        })));
+        foreach (Control action in resultActions.Controls) objectActions.Add(action);
+        layout.Controls.Add(resultActions, 0, 2);
+        var advanced = Grid(1, 3);
+        advanced.RowStyles.Add(new(SizeType.Absolute, 240));
+        advanced.RowStyles.Add(new(SizeType.Absolute, 100));
+        advanced.RowStyles.Add(new(SizeType.Percent, 100));
         var settings = Grid(2, 5);
-        settings.ColumnStyles.Add(new(SizeType.Absolute, 225)); settings.ColumnStyles.Add(new(SizeType.Percent, 100));
-        foreach (var height in new[] { 37, 37, 38, 80, 84 }) settings.RowStyles.Add(new(SizeType.Absolute, height));
-        settings.Controls.Add(Note("模型导入倍率"), 0, 0); settings.Controls.Add(modelImportScale, 1, 0);
-        settings.Controls.Add(Note("动画位置倍率"), 0, 1); settings.Controls.Add(animationPositionScale, 1, 1);
-        settings.Controls.Add(Note("首帧位移归零的节点"), 0, 2); settings.Controls.Add(normalizeRoot, 1, 2);
-        settings.Controls.Add(Note("排除后代（每行一个父路径）"), 0, 3); settings.Controls.Add(excludedDescendants, 1, 3);
-        settings.Controls.Add(Note("排除节点（每行一个路径）"), 0, 4); settings.Controls.Add(excludedNodes, 1, 4);
-        layout.Controls.Add(settings, 0, 1);
-        var flags = Flow(); flags.Controls.AddRange([dropUnmatched, dropSceneTranslation, forceLoop, createPreviewScene]); layout.Controls.Add(flags, 0, 2);
+        settings.ColumnStyles.Add(new(SizeType.Absolute, 110)); settings.ColumnStyles.Add(new(SizeType.Percent, 100));
+        foreach (var height in new[] { 34, 34, 38, 67, 67 }) settings.RowStyles.Add(new(SizeType.Absolute, height));
+        settings.Controls.Add(Note("模型倍率"), 0, 0); settings.Controls.Add(modelImportScale, 1, 0);
+        settings.Controls.Add(Note("位置倍率"), 0, 1); settings.Controls.Add(animationPositionScale, 1, 1);
+        settings.Controls.Add(Note("位移归零节点"), 0, 2); settings.Controls.Add(normalizeRoot, 1, 2);
+        settings.Controls.Add(Note("排除后代路径"), 0, 3); settings.Controls.Add(excludedDescendants, 1, 3);
+        settings.Controls.Add(Note("排除节点路径"), 0, 4); settings.Controls.Add(excludedNodes, 1, 4);
+        advanced.Controls.Add(settings, 0, 0);
+        var flags = Flow(); flags.Controls.AddRange([dropUnmatched, dropSceneTranslation, forceLoop, createPreviewScene]);
+        advanced.Controls.Add(flags, 0, 1);
         var actions = Flow();
-        var prepare = new Button { Text = "生成 Unity 适配包", Width = 185, Height = 35 };
+        var prepare = new Button { Text = "仅生成适配包", Width = 145, Height = 35 };
         prepare.Click += async (_, _) => await RunWorkflowAsync("prepare");
-        var read = new Button { Text = "读取 Unity 适配结果", Width = 190, Height = 35 };
-        read.Click += async (_, _) => await ReadAdaptationResultAsync();
-        var generate = new Button { Text = "导入并生成适配", Width = 185, Height = 35 };
+        var generate = new Button { Text = "导入已有适配包", Width = 145, Height = 35 };
         generate.Click += async (_, _) => await ReadAdaptationResultAsync(generate: true);
-        actions.Controls.Add(ActionButton("返回对象选择", () => pages.SelectedIndex = 5)); actions.Controls.Add(prepare);
-        actions.Controls.Add(generate); actions.Controls.Add(read);
-        actions.Controls.Add(ActionButton("打开适配包", () => RunAction(() =>
+        var read = new Button { Text = "核对已有结果", Width = 145, Height = 35 };
+        read.Click += async (_, _) => await ReadAdaptationResultAsync();
+        actions.Controls.AddRange([prepare, generate, read]);
+        actions.Controls.Add(ActionButton("打开适配包目录", () => RunAction(() =>
         {
             string? path = inventoryTask == null ? null : ObjectWorkflow.ReadPreparation(inventoryTask)?.UnityPackageDirectory;
             if (path == null || !Directory.Exists(path)) throw new InvalidDataException("请先生成适配包。");
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         })));
-        actions.Controls.Add(ActionButton("查看 Unity 运行日志", () => RunAction(() =>
-        {
-            var run = inventoryTask == null ? null : UnityAdaptationRunner.ReadLatest(inventoryTask);
-            if (run == null || !File.Exists(run.LogPath)) throw new InvalidDataException("尚无 Unity 运行日志；运行失败的阶段信息请查看任务记录。");
-            OpenLocal(run.LogPath);
-        })));
-        actions.Controls.Add(ActionButton("打开生成目录", () => RunAction(() =>
-        {
-            if (inventoryTask == null) throw new InvalidDataException("请先载入任务。");
-            var result = UnityAdaptationResults.ValidatePreparation(inventoryTask);
-            string path = UnityProjectFiles.Within(inventoryTask.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated");
-            if (!Directory.Exists(path)) throw new InvalidDataException("尚无生成目录，请先导入并生成适配。");
-            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-        })));
-        actions.Controls.Add(ActionButton("定位预览场景", () => RunAction(() =>
-        {
-            if (inventoryTask == null) throw new InvalidDataException("请先载入任务。");
-            var result = UnityAdaptationResults.ValidatePreparation(inventoryTask);
-            string scene = UnityProjectFiles.Within(inventoryTask.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated/CharacterPreview.unity");
-            if (result.UnityPreviewScene == null || !result.Adapted || !File.Exists(scene))
-                throw new InvalidDataException("请勾选生成预览场景，准备新包、生成并核对结果后重试。");
-            var info = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
-            info.ArgumentList.Add("/select," + scene); Process.Start(info);
-            adaptationDetails.AppendText("\r\n预览场景：" + scene + "\r\n在当前项目的 Unity Project 窗口打开此场景，点击 Play 后在 Game 视图切换、暂停或重播。\r\n");
-        })));
-        actions.Controls.Add(ActionButton("查看使用说明", () => RunAction(() => OpenLocal(Path.Combine(AppContext.BaseDirectory, "docs", "动画适配说明.md")))));
         actions.Controls.Add(ActionButton("查看诊断报告", () => RunAction(() =>
         {
             if (inventoryTask == null) throw new InvalidDataException("请先载入任务。");
-            OpenLocal(UnityDiagnosticReport.Export(inventoryTask));
+            adaptationDetails.Text = File.ReadAllText(UnityDiagnosticReport.Export(inventoryTask));
         })));
         foreach (Control action in actions.Controls) objectActions.Add(action);
-        layout.Controls.Add(actions, 0, 3); layout.Controls.Add(adaptationDetails, 0, 4); page.Controls.Add(layout);
-        adaptationDetails.Text = "默认模型与动画倍率均为 1；只有当前已收录且版本、模型标识匹配的陈千语配置预填模型倍率 100。\r\n其他角色请明确确认单位。当前只生成 Generic 直接骨骼动画，不进行 Humanoid 重定向、IK 或游戏修正骨骼求解。\r\n自动导入使用已保存计划中的项目与编辑器路径，不创建新项目；“读取 Unity 适配结果”仍可单独使用，不启动 Unity。";
+        advanced.Controls.Add(actions, 0, 2);
+        var advancedPreview = Collapsible("高级：单位、骨骼规则与单步执行", advanced, 470);
+        layout.Controls.Add(advancedPreview, 0, 3);
+        layout.Controls.Add(adaptationDetails, 0, 4);
+        retryConverted.Click += async (_, _) => await RetryConvertedAsync();
+        objectActions.Add(retryConverted); layout.Controls.Add(retryConverted, 0, 5);
+        previewPane.Controls.Add(ScrollableWorkflow(layout, advancedPreview));
+        UpdateAdaptationHint();
+        adaptationDetails.Text = "选择左侧模型、骨架和动作，点击“生成 Unity 预览”。\r\n工具自动准备适配包、导入 Unity 并核对结果。\r\n\r\n名称相关不等于兼容；遇到失败会在此列出原因。生成完成后仍需检查实际播放。";
+    }
+
+    private void LocatePreview()
+    {
+        if (inventoryTask == null) throw new InvalidDataException("请先载入任务。");
+        var saved = UnityTaskTarget.Resolve(inventoryTask);
+        var result = UnityAdaptationResults.ValidatePreparation(saved);
+        string scene = UnityProjectFiles.Within(saved.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated/CharacterPreview.unity");
+        if (!result.Adapted || !File.Exists(scene)) throw new InvalidDataException("当前目标项目尚无完整预览，请先生成并核对结果。");
+        var info = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+        info.ArgumentList.Add("/select," + scene); Process.Start(info);
+        adaptationDetails.AppendText("\r\n在 Unity 的 Project 窗口打开该场景，点击 Play：\r\n" + scene + "\r\n");
+    }
+
+    private static string PreviewResultText(SavedPlan original, ObjectOperationResult result)
+    {
+        var saved = UnityTaskTarget.Resolve(original);
+        return $"生成完成 · {result.ExpectedAdaptedClips} 条动画\r\n目标项目：{saved.Plan.Options.UnityProject}\r\n"
+            + "生成文件已核对；实际播放尚未验证。\r\n\r\n预览场景：\r\n" + (result.UnityPreviewScene ?? "本次未启用预览场景")
+            + "\r\n\r\n" + string.Join("\r\n", result.Warnings);
+    }
+
+    private void ShowPreviewFailure(SavedPlan saved, Exception error)
+    {
+        retryConverted.Enabled = false;
+        adaptationDetails.Text = "未完成：" + error.Message;
+        try
+        {
+            var summary = UnityFailureSummary.Read(saved);
+            if (summary == null) return;
+            adaptationDetails.AppendText("\r\n\r\n" + summary.Describe());
+            retryConverted.Enabled = summary.ConvertedKeys.Count > 0 && summary.Problems.Count > 0;
+        }
+        catch (Exception reportError) { adaptationDetails.AppendText("\r\n详细报告暂不可读：" + reportError.Message); }
+    }
+
+    private async Task RetryConvertedAsync()
+    {
+        try
+        {
+            if (inventoryTask == null || objectInventory == null) throw new InvalidDataException("请先载入动作。");
+            var summary = UnityFailureSummary.Read(inventoryTask) ?? throw new InvalidDataException("尚无当前包的生成报告。");
+            if (summary.ConvertedKeys.Count == 0 || summary.Problems.Count == 0) throw new InvalidDataException("当前没有需要单独重试的已转换项。");
+            var selection = JsonFiles.Read<ObjectExportSelection>(Path.Combine(Path.GetDirectoryName(inventoryTask.FilePath)!, "objects", summary.RunId, "selection.json"));
+            if (selection.Adaptation == null || summary.ConvertedKeys.Any(key => !selection.ClipKeys.Contains(key)
+                || objectInventory.Objects.All(row => row.Key != key || row.Kind != "AnimationClip")))
+                throw new InvalidDataException("报告中的动画与本次选择或对象列表不符。");
+            int model = Enumerable.Range(1, modelChoice.Items.Count - 1).FirstOrDefault(i => (modelChoice.Items[i] as ObjectChoice)?.Row?.Key == selection.ModelKey);
+            int avatar = Enumerable.Range(1, avatarChoice.Items.Count - 1).FirstOrDefault(i => (avatarChoice.Items[i] as ObjectChoice)?.Row?.Key == selection.AvatarKey);
+            if (model == 0 || avatar == 0) throw new InvalidDataException("原包模型或骨架不在当前对象列表中。");
+            modelChoice.SelectedIndex = model; avatarChoice.SelectedIndex = avatar;
+            var options = selection.Adaptation;
+            modelImportScale.Value = options.ModelImportScale; animationPositionScale.Value = options.PositionScale;
+            normalizeRoot.Text = options.NormalizeRoot; excludedDescendants.Lines = options.ExcludedDescendants.ToArray(); excludedNodes.Lines = options.ExcludedNodes.ToArray();
+            dropUnmatched.Checked = options.DropUnmatched; dropSceneTranslation.Checked = options.DropSceneTranslation;
+            forceLoop.Checked = options.ForceLoop; createPreviewScene.Checked = true;
+            checkedClips.Clear(); checkedClips.UnionWith(summary.ConvertedKeys); PopulateObjects();
+            await RunWorkflowAsync("preview");
+        }
+        catch (Exception error) { status.Text = "无法重试：" + error.Message; adaptationDetails.Text = error.Message; }
     }
 
     private void UpdateAdaptationDefaults()
@@ -96,8 +159,11 @@ internal sealed partial class WorkspaceForm
             && inventoryTask.Plan.GameAssemblySha256 == "C24495E51B406F03B03890C4788EE618AE022C991405BE5D5B8B787CB775AE89" ? 100 : 1;
     }
 
-    private void UpdateAdaptationHint() => adaptationHint.Text = "选择模型、Avatar 和动画 → 生成适配包 → 导入并生成适配。请先保存并关闭对应 Unity 编辑器；播放效果仍需检查。\n目标项目（来自已保存计划）："
-        + (inventoryTask?.Plan.Options.UnityProject ?? "请先载入任务") + "\n编辑器：" + (inventoryTask?.Plan.Options.UnityEditor ?? "请先载入任务");
+    private void UpdateAdaptationHint()
+    {
+        adaptationHint.Text = "生成前请保存并关闭顶部所示项目的 Unity 编辑器。\n自动准备、导入并核对结果；单位与骨骼规则可在高级设置中调整。";
+        UpdateContext();
+    }
 
     private AnimationPreparationOptions AdaptationOptions() => new()
     {
@@ -112,13 +178,14 @@ internal sealed partial class WorkspaceForm
         if (scanCancellation != null || extractionCancellation != null) return;
         if (inventoryTask == null) { status.Text = "请先载入任务。"; return; }
         using var cancellation = new CancellationTokenSource(); extractionCancellation = cancellation;
+        runningTask = inventoryTask;
         SetObjectActionsEnabled(false); executeExtraction.Enabled = resumeExtraction.Enabled = scan.Enabled = probe.Enabled = false;
         forceScan.Enabled = false;
         foreach (var action in catalogActions) action.Enabled = false;
         pages.TabPages[3].Enabled = false;
         stopScan.Enabled = true;
         scanProgress.Value = 0;
-        if (generate) { scanLog.Clear(); pages.SelectedIndex = 4; }
+        if (generate) scanLog.Clear();
         try
         {
             ObjectOperationResult result;
@@ -135,18 +202,18 @@ internal sealed partial class WorkspaceForm
                 result = outcome.Result;
             }
             else result = await UnityAdaptationResults.ImportAsync(inventoryTask, cancellation.Token);
-            scanProgress.Value = 100; pages.SelectedIndex = 6;
-            adaptationDetails.Text = DescribeObjectResult(result); status.Text = result.Message;
+            scanProgress.Value = 100;
+            adaptationDetails.Text = PreviewResultText(inventoryTask, result); status.Text = result.Message;
             foreach (ListViewItem row in tasks.Items)
                 if (((SavedPlan)row.Tag!).Plan.Id == inventoryTask.Plan.Id) row.SubItems[2].Text = ObjectStatus(result.Status);
             ShowTask();
         }
         catch (OperationCanceledException) { status.Text = generate ? "已取消导入／生成；本次启动的 Unity 已结束，记录和已有文件保留。" : "已取消读取适配结果。"; }
-        catch (Exception error) { status.Text = "适配操作未完成：" + error.Message; adaptationDetails.Text = error.Message; }
+        catch (Exception error) { status.Text = "适配操作未完成：" + error.Message; ShowPreviewFailure(inventoryTask, error); }
         finally
         {
             scanLog.AppendText(status.Text + Environment.NewLine);
-            extractionCancellation = null; SetObjectActionsEnabled(true);
+            extractionCancellation = null; runningTask = null; SetObjectActionsEnabled(true);
             executeExtraction.Enabled = resumeExtraction.Enabled = scan.Enabled = probe.Enabled = forceScan.Enabled = true; stopScan.Enabled = false;
             foreach (var action in catalogActions) action.Enabled = true;
             pages.TabPages[3].Enabled = true;
@@ -160,7 +227,7 @@ internal sealed partial class WorkspaceForm
                 var run = UnityAdaptationRunner.ReadLatest(inventoryTask);
                 if (run != null)
                 {
-                    adaptationDetails.AppendText($"\r\n最近 Unity 操作：{run.Status} · {run.Message}\r\n项目：{run.Project}\r\n日志：{run.LogPath}\r\n复用已有结果：{run.Reused}；已验证播放：{run.PlaybackVerified}\r\n");
+                    scanLog.AppendText($"\r\n最近 Unity 操作：{run.Status} · {run.Message}\r\n项目：{run.Project}\r\n日志：{run.LogPath}\r\n复用已有结果：{run.Reused}；已验证播放：{run.PlaybackVerified}\r\n");
                     latestIndexReport = Path.Combine(Path.GetDirectoryName(run.LogPath)!, "run.json");
                 }
             }

@@ -8,6 +8,7 @@ public static class UnityDiagnosticReport
 {
     public static string Export(SavedPlan saved)
     {
+        saved = UnityTaskTarget.Resolve(saved);
         var result = UnityAdaptationResults.ValidatePreparation(saved);
         string path = UnityProjectFiles.Within(saved.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated/adaptation-result.json");
         var report = JsonFiles.Read<JsonElement>(path);

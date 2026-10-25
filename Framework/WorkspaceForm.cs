@@ -28,8 +28,8 @@ internal sealed partial class WorkspaceForm : Form
     private readonly ITaskPlanner planner = new TaskPlanner();
     private readonly IGameResourceIndexer indexer = new GameResourceIndexer();
     private readonly IExtractionBackend extractor = new BundleExtractionBackend();
-    private readonly Button executeExtraction = new() { Text = "执行 Bundle 提取", Width = 185, Height = 35 };
-    private readonly Button resumeExtraction = new() { Text = "继续／重试提取", Width = 160, Height = 35 };
+    private readonly Button executeExtraction = new() { Text = "准备角色与动作", Width = 185, Height = 35 };
+    private readonly Button resumeExtraction = new() { Text = "继续准备资源", Width = 160, Height = 35 };
     private readonly Button scan = new() { Text = "扫描游戏资源", Width = 145, Height = 35 };
     private readonly Button probe = new() { Text = "检查索引兼容性", Width = 135, Height = 35 };
     private readonly Button stopScan = new() { Text = "取消扫描", Width = 95, Height = 35, Enabled = false };
@@ -47,32 +47,32 @@ internal sealed partial class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 诊断预览 0.10.0";
+        Text = "终末地角色工作台 · 统一工作流 0.11.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
-        ClientSize = new Size(1160, 850);
+        ClientSize = new Size(1320, 900);
         MinimumSize = new Size(1050, 800);
         StartPosition = FormStartPosition.CenterScreen;
 
-        var layout = Grid(1, 3);
+        var layout = rootLayout = Grid(1, 4);
         layout.Padding = new Padding(18);
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 115));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 63));
-        var header = new Panel { Dock = DockStyle.Fill };
-        header.Controls.Add(new Label { Text = "终末地角色工作台", AutoSize = true,
-            Font = new Font(Font.FontFamily, 23, FontStyle.Bold), Location = new Point(0, 0) });
-        header.Controls.Add(new Label { Text = "搜索资源 → 提取 Bundle → 解析对象 → 选择并导出", AutoSize = true,
-            ForeColor = Color.DimGray, Location = new Point(3, 48) });
-        layout.Controls.Add(header, 0, 0);
-        layout.Controls.Add(pages, 0, 1);
-        var footer = Grid(1, 2);
+        layout.Controls.Add(BuildContextHeader(), 0, 0);
+        layout.Controls.Add(BuildTargetEditor(), 0, 1);
+        var footer = Grid(2, 2);
+        footer.ColumnStyles.Add(new(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new(SizeType.Absolute, 112));
         footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 14));
         footer.Controls.Add(status, 0, 0);
+        footer.Controls.Add(stopScan, 1, 0);
         footer.Controls.Add(scanProgress, 0, 1);
-        layout.Controls.Add(footer, 0, 2);
+        footer.SetColumnSpan(scanProgress, 2);
+        layout.Controls.Add(footer, 0, 3);
         Controls.Add(layout);
 
         var settings = LoadSettings();
@@ -83,6 +83,7 @@ internal sealed partial class WorkspaceForm : Form
         BuildScanPage();
         BuildObjectsPage();
         BuildAnimationPage();
+        layout.Controls.Add(BuildNavigation(), 0, 2);
         search.TextChanged += (_, _) => { searchTimer.Stop(); searchTimer.Start(); };
         searchTimer.Tick += (_, _) => { searchTimer.Stop(); RefreshCharacters(); };
         characters.SelectedIndexChanged += (_, _) => SelectCharacter();
@@ -128,6 +129,9 @@ internal sealed partial class WorkspaceForm : Form
         };
         FormClosed += (_, _) => searchTimer.Dispose();
         RunAction(LoadSupportedCatalog);
+        RunAction(RefreshTasks);
+        sectionButtons[0].BackColor = Accent; sectionButtons[0].ForeColor = Color.White;
+        UpdateContext();
     }
 
     private void BuildCatalogPage()
@@ -149,7 +153,7 @@ internal sealed partial class WorkspaceForm : Form
             tools.Controls.Add(button);
             catalogActions.Add(button);
         }
-        tools.Controls.AddRange([probe, scan, stopScan, forceScan]);
+        tools.Controls.AddRange([probe, scan, forceScan]);
         layout.Controls.Add(tools, 0, 1);
         var searchRow = Grid(2, 1);
         searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
@@ -172,7 +176,7 @@ internal sealed partial class WorkspaceForm : Form
         var choices = Flow();
         choices.Controls.Add(ActionButton("全选当前列表", () => SetChecks(true)));
         choices.Controls.Add(ActionButton("取消当前勾选", () => SetChecks(false)));
-        choices.Controls.Add(ActionButton("查看提取计划 →", () => { UpdatePlan(); pages.SelectedIndex = 1; }));
+        choices.Controls.Add(ActionButton("准备角色资源 →", () => { UpdatePlan(); NavigateTo(1); }));
         right.Controls.Add(choices, 0, 0);
         right.Controls.Add(resourceSearch, 0, 1);
         right.Controls.Add(resources, 0, 2);
@@ -189,15 +193,15 @@ internal sealed partial class WorkspaceForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-        layout.Controls.Add(Note("扫描和提取只读游戏文件；输出保存在工作区。取消后当前文件重新处理，完整输出重新校验后可复用。"), 0, 0);
+        layout.Controls.Add(Note("这里查看运行日志与使用说明。运行时页面保持原位，底部显示进度；详细日志会自动追加在此处。"), 0, 0);
         layout.Controls.Add(scanLog, 0, 1);
         var actions = Flow();
         actions.Controls.Add(ActionButton("打开当前结果报告", () => RunAction(() =>
         {
             if (latestIndexReport == null) throw new InvalidDataException("当前任务还没有结果报告。");
-            OpenLocal(latestIndexReport);
+            ShowInlineLog(latestIndexReport);
         })));
-        actions.Controls.Add(ActionButton("返回资源列表", () => pages.SelectedIndex = 0));
+        actions.Controls.Add(ActionButton("使用说明", () => RunAction(() => ShowInlineLog(Path.Combine(AppContext.BaseDirectory, "docs", "统一工作流使用说明.md")))));
         actions.Controls.Add(ActionButton("取消当前任务", () => { scanCancellation?.Cancel(); extractionCancellation?.Cancel(); }));
         layout.Controls.Add(actions, 0, 2);
         page.Controls.Add(layout);
@@ -219,7 +223,6 @@ internal sealed partial class WorkspaceForm : Form
         scanProgress.Value = 0;
         scanLog.Clear();
         latestIndexReport = null;
-        pages.SelectedIndex = 4;
         try
         {
             var progress = new Progress<IndexProgress>(row =>
@@ -238,7 +241,6 @@ internal sealed partial class WorkspaceForm : Form
                 search.Clear();
                 RefreshCharacters();
                 status.Text = $"索引已完成：{catalog.Characters.Count} 个角色名称候选；{CompatibilityText(result.CompatibilityStatus)}。";
-                pages.SelectedIndex = 0;
             }
             else status.Text = "索引兼容性检查：" + CompatibilityText(result.CompatibilityStatus);
             scanLog.AppendText($"\r\n兼容状态：{CompatibilityText(result.CompatibilityStatus)}\r\n索引：{result.CatalogPath ?? "本次只检查格式，未扫描名称"}\r\n报告：{result.ReportPath}\r\n日志：{result.LogPath}\r\n{result.Catalog?.CoverageNote}\r\n");
@@ -279,12 +281,13 @@ internal sealed partial class WorkspaceForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 65));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 49));
-        layout.Controls.Add(Note("选择资源后生成独立的任务计划。保存计划只记录选择和依赖，不执行解包、不启动检查，也不写入 Unity 项目。"), 0, 0);
+        layout.Controls.Add(Note("点击“准备角色与动作”自动提取并解析资源。完成后点击顶部第 3 步选择动作；需要保留选择但稍后执行时，可仅保存计划。"), 0, 0);
         layout.Controls.Add(planDetails, 0, 1);
         var actions = Flow();
         actions.Controls.Add(ActionButton("保存提取计划", () => RunAction(SavePlan)));
         actions.Controls.Add(executeExtraction);
-        actions.Controls.Add(ActionButton("调整环境与选项 →", () => pages.SelectedIndex = 3));
+        actions.Controls.Add(ActionButton("设置默认项目", () => NavigateTo(3)));
+        actions.Controls.Add(ActionButton("载入所选任务的动作", () => RunAction(() => { LoadSavedObjects(); NavigateTo(5); })));
         layout.Controls.Add(actions, 0, 2);
         page.Controls.Add(layout);
     }
@@ -294,45 +297,48 @@ internal sealed partial class WorkspaceForm : Form
         var page = Page("任务记录");
         var layout = Grid(1, 4);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 51));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 85));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        layout.Controls.Add(Note("提取所选 Bundle 与清单依赖，可取消后继续。结果中的 Bundle 完成不代表 FBX、动画或 Unity 预览已生成。"), 0, 0);
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(Note("选择历史任务后，点击“打开角色与动作”继续。顶部显示当前任务的目标项目；详细记录默认收起。"), 0, 0);
         var actions = Flow();
         actions.Controls.Add(ActionButton("读取工作区任务", () => RunAction(RefreshTasks)));
-        actions.Controls.Add(ActionButton("打开所选计划文件", () => RunAction(() =>
+        actions.Controls.Add(ActionButton("打开角色与动作", () => RunAction(() => { LoadSavedObjects(); NavigateTo(5); })));
+        actions.Controls.Add(resumeExtraction);
+        var detailedActions = Flow();
+        detailedActions.Controls.Add(ActionButton("打开所选计划文件", () => RunAction(() =>
         {
             if (tasks.SelectedItems.Count == 0) throw new InvalidDataException("请先选择一个任务。");
             OpenLocal(((SavedPlan)tasks.SelectedItems[0].Tag!).FilePath);
         })));
-        actions.Controls.Add(resumeExtraction);
-        actions.Controls.Add(ActionButton("取消提取", () => extractionCancellation?.Cancel()));
-        actions.Controls.Add(ActionButton("打开提取目录", () => RunAction(() =>
+        detailedActions.Controls.Add(ActionButton("打开提取目录", () => RunAction(() =>
         {
             var folder = Path.Combine(Path.GetDirectoryName(SelectedTask().FilePath)!, "bundles");
             if (!Directory.Exists(folder)) throw new InvalidDataException("该任务尚未生成 Bundle 目录。");
             Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
         })));
-        actions.Controls.Add(ActionButton("打开提取结果", () => RunAction(() =>
-            OpenLocal(Path.Combine(Path.GetDirectoryName(SelectedTask().FilePath)!, "result.json")))));
-        actions.Controls.Add(inspectObjects);
-        actions.Controls.Add(ActionButton("载入已有对象列表", () => RunAction(LoadSavedObjects)));
+        detailedActions.Controls.Add(ActionButton("查看提取结果", () => RunAction(() =>
+            ShowInlineLog(Path.Combine(Path.GetDirectoryName(SelectedTask().FilePath)!, "result.json")))));
+        detailedActions.Controls.Add(inspectObjects);
         layout.Controls.Add(actions, 0, 1);
         layout.Controls.Add(tasks, 0, 2);
-        layout.Controls.Add(taskDetails, 0, 3);
+        var details = Grid(1, 2);
+        details.RowStyles.Add(new(SizeType.Absolute, 85)); details.RowStyles.Add(new(SizeType.Percent, 100));
+        details.Controls.Add(detailedActions, 0, 0); details.Controls.Add(taskDetails, 0, 1);
+        layout.Controls.Add(Collapsible("高级：任务详情、文件与单独解析", details, 330), 0, 3);
         page.Controls.Add(layout);
     }
 
     private void BuildSettingsPage(WorkspaceOptions options)
     {
-        var page = Page("环境与已有工具");
+        var page = Page("设置");
         var layout = Grid(1, 5);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 53));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 255));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(Note("填写计划使用的环境。路径填写不代表已通过环境检查；当前游戏版本将在后续执行阶段核对。"), 0, 0);
+        layout.Controls.Add(Note("这些是新任务的默认设置。已有任务请使用窗口顶部的“更换当前任务项目”，当前任务目标始终显示在顶部。"), 0, 0);
         var table = Grid(3, 5);
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -356,18 +362,11 @@ internal sealed partial class WorkspaceForm : Form
         actions.Controls.Add(ActionButton("保存环境设置", () => RunAction(() =>
         {
             JsonFiles.Write(WorkspaceStore.SettingsPath, CurrentOptions());
-            status.Text = "环境设置已保存；尚未运行环境检查。";
+            UpdateContext();
+            status.Text = "新任务默认设置已保存。已有任务的项目不变，可在顶部单独更换。";
         })));
-        var legacy = ActionButton("打开陈千语提取窗口", () =>
-        {
-            using var form = new MainForm();
-            form.ShowDialog(this);
-        });
-        legacy.Width = 220;
-        legacy.Enabled = File.Exists(Path.Combine(AppContext.BaseDirectory, "pipeline.py"));
-        actions.Controls.Add(legacy);
         layout.Controls.Add(actions, 0, 3);
-        layout.Controls.Add(Note("“动画适配”页已提供独立的导入与生成按钮，使用已保存计划中的 Unity 项目和编辑器路径；这里修改路径仅影响以后建立的计划。\n\n陈千语提取窗口沿用独立设置和专用流程。六条专属待机仍可从现有项目 Assets/ChenIdle/Chen_Idle.unity 打开。\n\n工作台设置与原工具分开保存；生成任务时选择空目录或本工作台已创建的目录。"), 0, 4);
+        layout.Controls.Add(Note("主要流程：角色与动作 → 选择资源并准备 → 选择模型和动作 → 生成 Unity 预览。\n\n准备包、导入 Unity、读取结果现在由一个主按钮完成；单独执行入口收在高级选项中。\n\n历史陈专用流程保留为命令行兼容入口 --legacy，主界面不再打开另一个操作窗口。\n\nJSON 保存环境设置、提取计划和运行结果；更换当前任务的 Unity 项目使用独立目标记录，不修改原计划摘要。"), 0, 4);
         page.Controls.Add(layout);
     }
 
@@ -510,7 +509,16 @@ internal sealed partial class WorkspaceForm : Form
     private void UpdatePlan()
     {
         if (paths.Count < 5) return;
-        try { planDetails.Text = Describe(MakePlan()); }
+        UpdateContext();
+        try
+        {
+            var plan = MakePlan();
+            planDetails.Text = $"角色：{plan.CharacterName}\r\n新任务目标项目：{plan.Options.UnityProject}\r\n输出工作区：{plan.Options.WorkspaceDirectory}\r\n\r\n"
+                + $"已选 {plan.RequestedResourceIds.Count} 项资源，工具将同时准备模型、骨架及已收录的依赖。\r\n\r\n"
+                + string.Join("\r\n", plan.Resources.Take(40).Select(resource => $"  [{KindText(resource.Kind)}] {resource.Name}"))
+                + (plan.Resources.Count > 40 ? "\r\n其余资源记录于任务计划。" : "")
+                + "\r\n\r\n准备完成后，在第 3 步勾选需要的动作，再生成 Unity 预览。";
+        }
         catch (InvalidDataException error) { planDetails.Text = error.Message; }
     }
 
@@ -518,7 +526,6 @@ internal sealed partial class WorkspaceForm : Form
     {
         var saved = store.Save(MakePlan());
         RefreshTasks();
-        pages.SelectedIndex = 2;
         foreach (ListViewItem row in tasks.Items)
             if (((SavedPlan)row.Tag!).Plan.Id == saved.Plan.Id) row.Selected = true;
         status.Text = "计划已保存，尚未执行提取：" + saved.FilePath;
@@ -544,6 +551,9 @@ internal sealed partial class WorkspaceForm : Form
                 var generation = UnityAdaptationRunner.ReadLatest(saved);
                 if (generation != null && generation.SourceRunId == prepared?.RunId && prepared.BundleRunId == bundle?.RunId
                     && generation.Status != "adapted_unverified") row.SubItems[2].Text = UnityGenerationStatus(generation.Status);
+                if (generation != null && !Path.GetFullPath(generation.Project).Equals(
+                    Path.GetFullPath(UnityTaskTarget.Resolve(saved).Plan.Options.UnityProject), StringComparison.OrdinalIgnoreCase))
+                    row.SubItems[2].Text = "目标项目已更换 · 待生成";
             }
             catch (Exception)
             {
@@ -557,6 +567,12 @@ internal sealed partial class WorkspaceForm : Form
 
     private void ShowTask()
     {
+        if (editingTargetTask != null && pages.SelectedIndex == 2
+            && (tasks.SelectedItems.Count == 0 || SelectedTask().Plan.Id != editingTargetTask.Plan.Id))
+        {
+            editingTargetTask = null; rootLayout.RowStyles[1].Height = 0;
+        }
+        UpdateContext();
         if (tasks.SelectedItems.Count == 0) { taskDetails.Clear(); return; }
         var saved = SelectedTask();
         try
@@ -571,6 +587,7 @@ internal sealed partial class WorkspaceForm : Form
                 + (generation == null ? "" : "\r\n最近 Unity 导入／生成（来源包 " + generation.SourceRunId + "）：\r\n"
                     + UnityGenerationStatus(generation.Status) + " · " + generation.Message + "\r\n项目：" + generation.Project
                     + "\r\n日志：" + generation.LogPath + "\r\n复用已有结果：" + generation.Reused + "；已验证播放：" + generation.PlaybackVerified + "\r\n")
+                + "\r\n当前任务目标项目：" + UnityTaskTarget.Resolve(saved).Plan.Options.UnityProject
                 + "\r\n计划文件：" + saved.FilePath + "\r\n\r\n" + Describe(saved.Plan);
         }
         catch (Exception error) { taskDetails.Text = "结果记录无法读取：" + error.Message; }
@@ -602,6 +619,7 @@ internal sealed partial class WorkspaceForm : Form
         catch (Exception error) { status.Text = "无法开始提取：" + error.Message; return; }
         using var cancellation = new CancellationTokenSource();
         extractionCancellation = cancellation;
+        runningTask = saved;
         executeExtraction.Enabled = resumeExtraction.Enabled = false;
         SetObjectActionsEnabled(false);
         scan.Enabled = probe.Enabled = forceScan.Enabled = false;
@@ -611,7 +629,6 @@ internal sealed partial class WorkspaceForm : Form
         scanProgress.Value = 0;
         scanLog.Clear();
         latestIndexReport = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "result.json");
-        pages.SelectedIndex = 2;
         taskDetails.Text = "正在核对并提取 Bundle；模型和动画导出尚未执行。";
         status.Text = "正在启动 Bundle 提取与校验…";
         foreach (ListViewItem row in tasks.Items)
@@ -627,7 +644,11 @@ internal sealed partial class WorkspaceForm : Form
                 scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
             });
             var result = await extractor.ExecuteAsync(saved, progress, cancellation.Token);
-            status.Text = $"Bundle 提取完成：{result.TotalBundles} 个，新提取 {result.ExtractedFiles}，复用 {result.ReusedFiles}。";
+            status.Text = "资源提取完成，正在解析角色和动作…";
+            var objects = await objectWorkflow.ExecuteAsync(saved, "inspect", null, null, progress, cancellation.Token);
+            LoadObjects(saved, objects.InventoryPath!);
+            latestIndexReport = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "objects", "result.json");
+            status.Text = "角色资源已准备完成。点击顶部“3 选择动作与预览”继续。";
         }
         catch (OperationCanceledException) { status.Text = "提取已取消；选择该任务后可继续，完整文件会重新校验后复用。"; }
         catch (Exception error) { status.Text = "提取未完成：" + error.Message; }
@@ -635,6 +656,7 @@ internal sealed partial class WorkspaceForm : Form
         {
             scanLog.AppendText(status.Text + Environment.NewLine);
             extractionCancellation = null;
+            runningTask = null;
             executeExtraction.Enabled = resumeExtraction.Enabled = true;
             SetObjectActionsEnabled(true);
             scan.Enabled = probe.Enabled = forceScan.Enabled = true;
@@ -687,7 +709,7 @@ internal sealed partial class WorkspaceForm : Form
         catch (Exception error)
         {
             status.Text = "未完成：" + error.Message;
-            MessageBox.Show(this, error.Message, "操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            scanLog.AppendText(status.Text + Environment.NewLine);
         }
     }
 
@@ -720,7 +742,7 @@ internal sealed partial class WorkspaceForm : Form
     private static TextBox ReadOnlyText() => new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
         ScrollBars = ScrollBars.Vertical, BackColor = Color.FromArgb(247, 249, 251), BorderStyle = BorderStyle.FixedSingle };
     private static TableLayoutPanel Grid(int columns, int rows) => new() { Dock = DockStyle.Fill, ColumnCount = columns, RowCount = rows, Margin = Padding.Empty };
-    private static FlowLayoutPanel Flow() => new() { Dock = DockStyle.Fill, WrapContents = true, Margin = Padding.Empty };
+    private static FlowLayoutPanel Flow() => new() { Dock = DockStyle.Fill, WrapContents = true, AutoScroll = true, Margin = Padding.Empty };
     private static Button ActionButton(string text, Action action)
     {
         var button = new Button { Text = text, Width = 163, Height = 35, FlatStyle = FlatStyle.Flat,

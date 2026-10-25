@@ -23,65 +23,52 @@ internal sealed partial class WorkspaceForm
     private string? objectInventoryPath;
     private bool loadingClips;
 
+    private readonly Panel previewPane = new() { Dock = DockStyle.Fill };
+    private readonly ComboBox clipCategory = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+
     private void BuildObjectsPage()
     {
-        var page = Page("对象与导出");
-        var layout = Grid(1, 7);
-        foreach (var height in new[] { 59, 45, 38, 65 }) layout.RowStyles.Add(new(SizeType.Absolute, height));
+        var page = Page("选择动作与预览");
+        var body = Grid(2, 1);
+        body.ColumnStyles.Add(new(SizeType.Percent, 52)); body.ColumnStyles.Add(new(SizeType.Percent, 48));
+        var layout = Grid(1, 7); layout.Padding = new Padding(0, 0, 12, 0);
+        foreach (var height in new[] { 49, 45, 100, 72 }) layout.RowStyles.Add(new(SizeType.Absolute, height));
         layout.RowStyles.Add(new(SizeType.Percent, 100));
-        layout.RowStyles.Add(new(SizeType.Absolute, 40));
-        layout.RowStyles.Add(new(SizeType.Absolute, 112));
+        layout.RowStyles.Add(new(SizeType.Absolute, 43));
+        layout.RowStyles.Add(new(SizeType.AutoSize));
         layout.Controls.Add(objectInfo, 0, 0);
         var actions = Flow();
-        foreach (var button in new[] {
-            ActionButton("选择任务 →", () => pages.SelectedIndex = 2),
-            ActionButton("载入已有对象列表", () => RunAction(LoadSavedObjects)), exportObjects,
-            ActionButton("动画适配 →", () => pages.SelectedIndex = 6),
-            ActionButton("打开导出目录", () => RunAction(() =>
-            {
-                var result = CurrentObjectResult();
-                if (!Directory.Exists(result.OutputDirectory)) throw new InvalidDataException("该次任务尚未生成导出目录。");
-                Process.Start(new ProcessStartInfo(result.OutputDirectory) { UseShellExecute = true });
-            })),
-            ActionButton("打开对象报告", () => RunAction(() =>
-            {
-                if (inventoryTask == null) throw new InvalidDataException("请先载入对象列表。");
-                OpenLocal(Path.Combine(Path.GetDirectoryName(inventoryTask.FilePath)!, "objects", "result.json"));
-            })) })
-        {
-            actions.Controls.Add(button);
-            objectActions.Add(button);
-        }
+        actions.Controls.Add(ActionButton("载入所选任务", () => RunAction(LoadSavedObjects)));
+        actions.Controls.Add(exportObjects); objectActions.Add(exportObjects);
         layout.Controls.Add(actions, 0, 1);
-        layout.Controls.Add(objectSearch, 0, 2);
         var selectors = Grid(2, 2);
-        selectors.ColumnStyles.Add(new(SizeType.Percent, 50));
-        selectors.ColumnStyles.Add(new(SizeType.Percent, 50));
-        selectors.RowStyles.Add(new(SizeType.Absolute, 28));
-        selectors.RowStyles.Add(new(SizeType.Percent, 100));
-        selectors.Controls.Add(Note("模型根节点 → FBX（请选择一个）"), 0, 0);
-        selectors.Controls.Add(Note("Avatar（自动选择仅依据实际 Animator 引用）"), 1, 0);
-        selectors.Controls.Add(modelChoice, 0, 1);
-        selectors.Controls.Add(avatarChoice, 1, 1);
-        layout.Controls.Add(selectors, 0, 3);
-        var lists = Grid(2, 1);
-        lists.ColumnStyles.Add(new(SizeType.Percent, 58));
-        lists.ColumnStyles.Add(new(SizeType.Percent, 42));
-        objectRows.Margin = new Padding(0, 0, 10, 0);
-        lists.Controls.Add(objectRows, 0, 0);
-        lists.Controls.Add(clipRows, 1, 0);
-        layout.Controls.Add(lists, 0, 4);
+        selectors.ColumnStyles.Add(new(SizeType.Absolute, 78)); selectors.ColumnStyles.Add(new(SizeType.Percent, 100));
+        selectors.RowStyles.Add(new(SizeType.Percent, 50)); selectors.RowStyles.Add(new(SizeType.Percent, 50));
+        selectors.Controls.Add(Note("模型"), 0, 0); selectors.Controls.Add(modelChoice, 1, 0);
+        selectors.Controls.Add(Note("骨架"), 0, 1); selectors.Controls.Add(avatarChoice, 1, 1);
+        layout.Controls.Add(selectors, 0, 2);
+        var filters = Grid(1, 2); filters.RowStyles.Add(new(SizeType.Percent, 50)); filters.RowStyles.Add(new(SizeType.Percent, 50));
+        clipCategory.Items.AddRange(["当前角色名称相关（未检查兼容）", "待机／休息", "行走／移动", "全部动作"]);
+        clipCategory.SelectedIndex = 0;
+        filters.Controls.Add(clipCategory, 0, 0); filters.Controls.Add(objectSearch, 0, 1);
+        layout.Controls.Add(filters, 0, 3);
+        layout.Controls.Add(clipRows, 0, 4);
         var clipActions = Flow();
-        clipActions.Controls.Add(ActionButton("勾选当前动画列表", () => SetClipChecks(true)));
-        clipActions.Controls.Add(ActionButton("清空全部动画勾选", () => { checkedClips.Clear(); PopulateObjects(); }));
+        clipActions.Controls.Add(ActionButton("勾选当前列表", () => SetClipChecks(true)));
+        clipActions.Controls.Add(ActionButton("清空全部勾选", () => { checkedClips.Clear(); PopulateObjects(); }));
         layout.Controls.Add(clipActions, 0, 5);
-        layout.Controls.Add(objectDetails, 0, 6);
-        page.Controls.Add(layout);
+        var metadata = Grid(1, 2); metadata.RowStyles.Add(new(SizeType.Percent, 58)); metadata.RowStyles.Add(new(SizeType.Percent, 42));
+        metadata.Controls.Add(objectRows, 0, 0); metadata.Controls.Add(objectDetails, 0, 1);
+        var advancedObjects = Collapsible("高级：原始对象与来源详情", metadata, 220);
+        layout.Controls.Add(advancedObjects, 0, 6);
+        body.Controls.Add(ScrollableWorkflow(layout, advancedObjects), 0, 0);
+        body.Controls.Add(previewPane, 1, 0); page.Controls.Add(body);
         modelChoice.Items.Add(new ObjectChoice(null, "不导出模型")); modelChoice.SelectedIndex = 0;
         avatarChoice.Items.Add(new ObjectChoice(null, "不指定 Avatar")); avatarChoice.SelectedIndex = 0;
         inspectObjects.Click += async (_, _) => await RunObjectOperationAsync(false);
         exportObjects.Click += async (_, _) => await RunObjectOperationAsync(true);
         objectSearch.TextChanged += (_, _) => PopulateObjects();
+        clipCategory.SelectedIndexChanged += (_, _) => PopulateObjects();
         modelChoice.SelectedIndexChanged += (_, _) =>
         {
             var linked = (modelChoice.SelectedItem as ObjectChoice)?.Row?.LinkedAvatarKey;
@@ -112,7 +99,18 @@ internal sealed partial class WorkspaceForm
         foreach (var control in objectActions) control.Enabled = enabled;
         // Preserve selections while an operation runs, but prevent edits during execution.
         pages.TabPages[5].Enabled = enabled;
-        pages.TabPages[6].Enabled = enabled;
+        if (!enabled) { rootLayout.RowStyles[1].Height = 0; editingTargetTask = null; }
+        retryConverted.Enabled = false;
+        if (enabled && inventoryTask != null)
+        {
+            try
+            {
+                var summary = UnityFailureSummary.Read(inventoryTask);
+                retryConverted.Enabled = summary?.ConvertedKeys.Count > 0 && summary.Problems.Count > 0;
+            }
+            catch (Exception) { /* A missing or unreadable report must not enable recovery. */ }
+        }
+        UpdateContext();
     }
 
     private void LoadSavedObjects()
@@ -126,6 +124,14 @@ internal sealed partial class WorkspaceForm
             throw new InvalidDataException("Bundle 提取记录已变化，请重新解析对象。");
         LoadObjects(saved, result.InventoryPath);
         objectDetails.Text = DescribeObjectResult(result);
+        retryConverted.Enabled = false;
+        try
+        {
+            var summary = UnityFailureSummary.Read(saved);
+            adaptationDetails.Text = summary == null ? "选择动作后点击“生成 Unity 预览”。" : summary.Describe();
+            retryConverted.Enabled = summary?.ConvertedKeys.Count > 0 && summary.Problems.Count > 0;
+        }
+        catch (Exception error) { adaptationDetails.Text = "历史生成结果暂不可读：" + error.Message; }
     }
 
     private void LoadObjects(SavedPlan saved, string path)
@@ -139,8 +145,14 @@ internal sealed partial class WorkspaceForm
         foreach (var row in loaded.Objects.Where(row => row.IsModelCandidate)) modelChoice.Items.Add(new ObjectChoice(row));
         foreach (var row in loaded.Objects.Where(row => row.Kind == "Avatar")) avatarChoice.Items.Add(new ObjectChoice(row));
         modelChoice.SelectedIndex = avatarChoice.SelectedIndex = 0;
+        var preferred = loaded.Objects.Where(row => row.IsModelCandidate
+            && (row.PathId == saved.Plan.RootPathId || row.Name == saved.Plan.RootName)).ToList();
+        if (preferred.Count == 0) preferred = loaded.Objects.Where(row => row.IsModelCandidate).ToList();
+        if (preferred.Count == 1)
+            for (int i = 1; i < modelChoice.Items.Count; i++)
+                if ((modelChoice.Items[i] as ObjectChoice)?.Row?.Key == preferred[0].Key) modelChoice.SelectedIndex = i;
         objectSearch.Clear(); PopulateObjects();
-        pages.SelectedIndex = 5;
+        UpdateContext();
     }
 
     private void PopulateObjects()
@@ -159,7 +171,16 @@ internal sealed partial class WorkspaceForm
                 item.SubItems.AddRange([row.Name, row.PathId, row.SourceAsset, Path.GetFileName(row.SourceBundle)]);
                 objectRows.Items.Add(item);
             }
-            foreach (var row in rows.Where(row => row.Kind == "AnimationClip").Take(2000))
+            var clips = rows.Where(row => row.Kind == "AnimationClip");
+            bool Related(BundleObjectRow row) => row.Name.Contains("_" + inventoryTask!.Plan.CharacterId + "_", StringComparison.OrdinalIgnoreCase);
+            clips = clipCategory.SelectedIndex switch
+            {
+                0 => objectInventory.Objects.Any(row => row.Kind == "AnimationClip" && Related(row)) ? clips.Where(Related) : clips,
+                1 => clips.Where(row => new[] { "idle", "loop", "relax", "stand" }.Any(term => row.Name.Contains(term, StringComparison.OrdinalIgnoreCase))),
+                2 => clips.Where(row => new[] { "walk", "run", "move" }.Any(term => row.Name.Contains(term, StringComparison.OrdinalIgnoreCase))),
+                _ => clips
+            };
+            foreach (var row in clips.Take(2000))
                 clipRows.Items.Add(new ObjectChoice(row), checkedClips.Contains(row.Key));
         }
         finally { loadingClips = false; objectRows.EndUpdate(); clipRows.EndUpdate(); }
@@ -169,7 +190,9 @@ internal sealed partial class WorkspaceForm
     private void UpdateObjectInfo()
     {
         if (objectInventory == null || inventoryTask == null) return;
-        objectInfo.Text = $"当前：{inventoryTask.Plan.CharacterName} · 任务 {inventoryTask.Plan.Id.ToString("N")[..8]} · {objectInventory.Objects.Count} 个对象 · 已勾选 {checkedClips.Count} 条动画（含隐藏项）。\n每个列表最多显示 2000 项，可筛选；导出为 FBX／原始 .anim，未做 Unity 适配及播放验证。";
+        int visibleSelected = clipRows.Items.Cast<ObjectChoice>().Count(choice => checkedClips.Contains(choice.Row!.Key));
+        objectInfo.Text = $"已选 {checkedClips.Count} 条动作，其中 {checkedClips.Count - visibleSelected} 条不在当前筛选内。\n名称筛选不代表骨架兼容；没有名称关联项时显示全部。";
+        UpdateContext();
     }
 
     private void SetClipChecks(bool value)
@@ -185,7 +208,7 @@ internal sealed partial class WorkspaceForm
 
     private async Task RunWorkflowAsync(string mode)
     {
-        bool export = mode != "inspect", prepare = mode == "prepare";
+        bool preview = mode == "preview", export = mode != "inspect", prepare = mode is "prepare" or "preview";
         if (scanCancellation != null || extractionCancellation != null) return;
         SavedPlan saved;
         ObjectExportSelection? selection = null;
@@ -199,18 +222,25 @@ internal sealed partial class WorkspaceForm
                 if (selection.ModelKey == null && selection.ClipKeys.Count == 0) throw new InvalidDataException("请选择模型根节点或勾选动画。");
                 if (prepare && (selection.ModelKey == null || selection.AvatarKey == null || selection.ClipKeys.Count == 0))
                     throw new InvalidDataException("生成适配包需要选择模型、Avatar 和至少一条动画。");
+                if (preview)
+                {
+                    var target = UnityTaskTarget.Resolve(saved);
+                    UnityAdaptationRunner.ValidateProject(target.Plan.Options.UnityProject, target.Plan.Options.UnityEditor);
+                    UnityAdaptationRunner.RequireClosedProject(target.Plan.Options.UnityProject);
+                }
             }
             else if (BundleExtractionBackend.ReadResult(saved)?.Status != "bundles_extracted")
                 throw new InvalidDataException("请先完成该任务的 Bundle 提取。");
         }
-        catch (Exception error) { status.Text = "无法开始：" + error.Message; return; }
+        catch (Exception error) { status.Text = "无法开始：" + error.Message; if (prepare) adaptationDetails.Text = status.Text; return; }
         using var cancellation = new CancellationTokenSource();
         extractionCancellation = cancellation;
+        runningTask = saved;
         SetObjectActionsEnabled(false);
         scan.Enabled = probe.Enabled = forceScan.Enabled = executeExtraction.Enabled = resumeExtraction.Enabled = false;
         foreach (var action in catalogActions) action.Enabled = false;
         pages.TabPages[3].Enabled = false; stopScan.Enabled = true;
-        scanProgress.Value = 0; scanLog.Clear(); pages.SelectedIndex = 4;
+        scanProgress.Value = 0; scanLog.Clear();
         latestIndexReport = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "objects", "result.json");
         status.Text = export ? "正在导出所选对象…" : "正在解析 Bundle 中的实际对象…";
         try
@@ -222,20 +252,30 @@ internal sealed partial class WorkspaceForm
                 if (scanLog.TextLength > 150000) scanLog.Text = scanLog.Text[^75000..];
                 scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
             });
-            var result = await objectWorkflow.ExecuteAsync(saved, mode, objectInventoryPath, selection, progress, cancellation.Token);
+            var result = await objectWorkflow.ExecuteAsync(saved, preview ? "prepare" : mode, objectInventoryPath, selection, progress, cancellation.Token);
             scanProgress.Value = 100;
             if (!export) LoadObjects(saved, result.InventoryPath!);
             objectDetails.Text = DescribeObjectResult(result);
             status.Text = result.Status == "partial" ? "部分导出失败，请查看对象报告。" : result.Message;
-            pages.SelectedIndex = prepare ? 6 : 5;
             if (prepare) adaptationDetails.Text = DescribeObjectResult(result) + "\r\n适配包：" + result.UnityPackageDirectory;
+            if (preview)
+            {
+                var outcome = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, cancellation.Token);
+                result = outcome.Result;
+                adaptationDetails.Text = PreviewResultText(saved, result);
+                status.Text = result.Message;
+            }
         }
         catch (OperationCanceledException) { status.Text = "对象操作已取消；本次记录保留，重新执行会建立新的运行目录。"; }
-        catch (Exception error) { status.Text = "对象操作未完成：" + error.Message; }
+        catch (Exception error)
+        {
+            status.Text = "操作未完成：" + error.Message;
+            if (prepare) ShowPreviewFailure(saved, error);
+        }
         finally
         {
             scanLog.AppendText(status.Text + Environment.NewLine);
-            extractionCancellation = null; SetObjectActionsEnabled(true);
+            extractionCancellation = null; runningTask = null; SetObjectActionsEnabled(true);
             scan.Enabled = probe.Enabled = forceScan.Enabled = executeExtraction.Enabled = resumeExtraction.Enabled = true;
             foreach (var action in catalogActions) action.Enabled = true;
             pages.TabPages[3].Enabled = true; stopScan.Enabled = false;
@@ -274,6 +314,6 @@ internal sealed partial class WorkspaceForm
 
     private sealed record ObjectChoice(BundleObjectRow? Row, string? Label = null)
     {
-        public override string ToString() => Row == null ? Label ?? "无" : $"{Row.Name} [{Row.PathId}] · {Row.SourceAsset} · {Path.GetFileName(Row.SourceBundle)}";
+        public override string ToString() => Row == null ? Label ?? "无" : $"{Row.Name} [{Row.PathId}]";
     }
 }

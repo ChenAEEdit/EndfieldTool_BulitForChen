@@ -13,7 +13,7 @@ public static class UnityAdaptationResults
         using var taskLock = new FileStream(Path.Combine(taskRoot, "extraction.lock"), FileMode.OpenOrCreate,
             FileAccess.ReadWrite, FileShare.ReadWrite);
         taskLock.Lock(0, 1);
-        try { return await ImportLockedAsync(saved, token); }
+        try { return await ImportLockedAsync(UnityTaskTarget.Resolve(saved), token); }
         finally { taskLock.Unlock(0, 1); }
     }
 
