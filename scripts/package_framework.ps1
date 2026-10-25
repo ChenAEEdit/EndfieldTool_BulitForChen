@@ -93,8 +93,9 @@ foreach ($runtimeName in $exporterBuilds.Keys) {
     $baselineRuntime = if ($runtimeName -eq 'object-model') { 'model' } else { 'animation' }
     $destination = Join-Path $packageRoot ('runtime\' + $runtimeName)
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $sourceRoot ('runtime\' + $baselineRuntime)) -File) {
-        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $destination $file.Name) -Force
+    # Legacy FBXWrapper loads native libraries from x64/, not only the runtime root.
+    foreach ($entry in Get-ChildItem -LiteralPath (Join-Path $sourceRoot ('runtime\' + $baselineRuntime))) {
+        Copy-Item -LiteralPath $entry.FullName -Destination $destination -Recurse -Force
     }
     $buildDirectory = Join-Path (Split-Path -Parent $repoRoot) ('outputs\character_tool_framework\' + $runtimeName)
     foreach ($file in Get-ChildItem -LiteralPath $buildDirectory -File) {
@@ -107,7 +108,7 @@ foreach ($runtimeName in $exporterBuilds.Keys) {
         Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\exporters\' + $projectName + '\' + $file)) -Destination (Join-Path $exporterSource $file) -Force
     }
 }
-foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py', 'object_pipeline.py')) {
+foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py', 'object_pipeline.py', 'verify_object_export_files.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $packageRoot ('scripts\' + $file)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'profiles\known_builds.json') -Destination (Join-Path $packageRoot 'profiles\known_builds.json') -Force
@@ -122,9 +123,14 @@ foreach ($file in @('Program.cs', 'EndfieldChenTool.csproj', 'NuGet.Config', 'bu
     Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination (Join-Path $guiSource $file) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'Framework') -Destination $guiSource -Recurse -Force
+$verificationSource = Join-Path $packageRoot 'sources\verification\WorkspaceExportVerification'
+New-Item -ItemType Directory -Path $verificationSource -Force | Out-Null
+foreach ($file in @('Program.cs', 'WorkspaceExportVerification.csproj')) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceExportVerification\' + $file)) -Destination (Join-Path $verificationSource $file) -Force
+}
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.6.0-object-export-preview'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.6.1-object-export-preview'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

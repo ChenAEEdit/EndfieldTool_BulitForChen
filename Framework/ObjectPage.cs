@@ -215,6 +215,7 @@ internal sealed partial class WorkspaceForm
                 scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
             });
             var result = await objectWorkflow.ExecuteAsync(saved, export ? "export" : "inspect", objectInventoryPath, selection, progress, cancellation.Token);
+            scanProgress.Value = 100;
             if (!export) LoadObjects(saved, result.InventoryPath!);
             objectDetails.Text = DescribeObjectResult(result);
             status.Text = result.Status == "partial" ? "部分导出失败，请查看对象报告。" : result.Message;
