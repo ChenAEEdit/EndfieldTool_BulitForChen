@@ -23,17 +23,19 @@ public static class CharacterAnimationAdapter
     }
     [Serializable] public class InputFile { public string path, sha256; }
     [Serializable] public class ClipInput { public string id, name, source; }
+    [Serializable] public class Preview { public bool enabled; }
     [Serializable] public class Config
     {
-        public string schema, taskId, runId, model;
+        public string schema, taskId, runId, model, adapterVersion;
         public float modelImportScale = 1;
         public Rules rules;
         public ClipInput[] clips;
         public InputFile[] inputs;
+        public Preview preview;
     }
     [Serializable] public class ClipReport
     {
-        public string name, output, error;
+        public string name, output, error, state;
         public int sourceBindings, retainedBindings, skippedAnimator, skippedOther, droppedSceneTranslation,
             remappedBindings, excludedBindings, repairedTangents;
         public bool adapted;
@@ -44,8 +46,11 @@ public static class CharacterAnimationAdapter
     {
         public string schema = "endfield-unity-adaptation-v1", taskId, runId, configSha256, unityVersion, status, error, invocationId;
         public bool adapted, playbackVerified;
+        public bool previewCreated;
+        public string previewScene;
         public ClipReport[] clips;
         public OutputFile[] outputs;
+        public OutputFile[] metadata;
     }
 
     [Serializable] public class BatchReceipt
@@ -239,7 +244,10 @@ public static class CharacterAnimationAdapter
                     var clip = CreateDirectClip(root, source, config.rules, item); clip.name = input.name;
                     item.output = generated + "/Clip_" + input.id + ".anim";
                     AssetDatabase.CreateAsset(clip, item.output); outputs.Add(item.output);
-                    var state = controller.layers[0].stateMachine.AddState(input.name); state.motion = clip;
+                    string stateName = "Clip_" + input.id;
+                    var state = controller.layers[0].stateMachine.AddState(stateName); state.motion = clip;
+                    state.writeDefaultValues = true;
+                    item.state = "Base Layer." + stateName;
                     if (details.Count == 1) controller.layers[0].stateMachine.defaultState = state;
                     item.adapted = true;
                 }
@@ -251,12 +259,27 @@ public static class CharacterAnimationAdapter
             string prefabPath = generated + "/Character.prefab";
             PrefabUtility.SaveAsPrefabAsset(root, prefabPath); outputs.Add(prefabPath);
             AssetDatabase.SaveAssets();
+            if (config.preview != null && config.preview.enabled && details.Count == config.clips.Length && details.All(item => item.adapted))
+            {
+                report.previewScene = generated + "/CharacterPreview.unity";
+                CreatePreview(prefabPath, details, report.previewScene);
+                outputs.Add(report.previewScene); report.previewCreated = true;
+            }
             foreach (var input in config.inputs)
                 if (Hash(Local(basePath, input.path)) != input.sha256) throw new Exception("生成期间输入文件发生变化：" + input.path);
             if (Hash(configPath) != report.configSha256) throw new Exception("生成期间适配配置发生变化。");
             report.adapted = details.Count == config.clips.Length && details.All(item => item.adapted);
             report.status = report.adapted ? "adapted_unverified" : "partial";
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             report.outputs = outputs.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
+            if (config.adapterVersion == "0.9.0")
+            {
+                var metadataPaths = config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs).Concat(new[] {
+                    "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs",
+                    "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs" })
+                    .Select(path => path + ".meta").Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal);
+                report.metadata = metadataPaths.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
+            }
         }
         catch (Exception error) { report.adapted = false; report.status = "failed"; report.error = error.ToString(); }
         finally
@@ -267,6 +290,61 @@ public static class CharacterAnimationAdapter
         }
         if (!report.adapted) throw new Exception("适配未全部完成，请查看 " + reportPath);
         Debug.Log("原生动画适配完成；尚未验证播放。结果：" + reportPath);
+    }
+
+    static void CreatePreview(string prefabPath, List<ClipReport> clips, string scenePath)
+    {
+        var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+        var preview = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+        try
+        {
+            UnityEngine.SceneManagement.SceneManager.SetActiveScene(preview);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            var character = (GameObject)PrefabUtility.InstantiatePrefab(asset, preview);
+            var renderers = character.GetComponentsInChildren<Renderer>(true).Where(item => item.enabled && item.gameObject.activeInHierarchy).ToArray();
+            if (renderers.Length == 0) throw new Exception("预览模型没有可见 Renderer。");
+            Bounds bounds = renderers[0].bounds;
+            foreach (var renderer in renderers)
+            {
+                var value = renderer.bounds;
+                if (!Finite(value.center.x) || !Finite(value.center.y) || !Finite(value.center.z)
+                    || !Finite(value.size.x) || !Finite(value.size.y) || !Finite(value.size.z))
+                    throw new Exception("模型包围盒无效，无法安排预览相机。");
+                bounds.Encapsulate(value);
+            }
+            float radius = bounds.extents.magnitude;
+            if (!Finite(radius) || radius < .00001f || radius > 1000000) throw new Exception("模型尺寸无法用于预览，请核对导入倍率。");
+            var cameraObject = new GameObject("Preview Camera");
+            var camera = cameraObject.AddComponent<Camera>(); cameraObject.tag = "MainCamera";
+            camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = new Color(.12f, .14f, .18f);
+            camera.fieldOfView = 32;
+            // Use a conservative portrait aspect, leaving space for the control panel at wider ratios.
+            float limitingAngle = Mathf.Atan(Mathf.Tan(camera.fieldOfView * Mathf.Deg2Rad / 2) * .65f);
+            float distance = radius / Mathf.Sin(limitingAngle) * 1.25f;
+            camera.nearClipPlane = Mathf.Max(.0001f, radius / 200);
+            camera.farClipPlane = Mathf.Max(camera.nearClipPlane + 1, distance * 10 + radius * 2);
+            camera.transform.position = bounds.center + Quaternion.Euler(4, 0, 0) * Vector3.forward * distance;
+            camera.transform.LookAt(bounds.center);
+            var key = new GameObject("Preview Key Light").AddComponent<Light>();
+            key.type = LightType.Directional; key.intensity = 1.25f; key.transform.rotation = Quaternion.Euler(35, -25, 0);
+            var fill = new GameObject("Preview Fill Light").AddComponent<Light>();
+            fill.type = LightType.Directional; fill.intensity = .45f; fill.transform.rotation = Quaternion.Euler(20, 145, 0);
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(.55f, .55f, .55f);
+            var controls = new GameObject("Animation Preview Controls").AddComponent<EndfieldCharacterWorkbench.CharacterPreviewControls>();
+            controls.animator = character.GetComponent<Animator>(); controls.previewCamera = camera;
+            controls.clips = clips.Select(item => AssetDatabase.LoadAssetAtPath<AnimationClip>(item.output)).ToArray();
+            controls.statePaths = clips.Select(item => item.state).ToArray(); controls.cameraPivot = bounds.center; controls.cameraDistance = distance;
+            controls.cameraRadius = radius;
+            // Save the imported rest pose. Runtime controls initialize animation only after Play begins.
+            if (!EditorSceneManager.SaveScene(preview, scenePath)) throw new Exception("预览场景保存失败。");
+            AssetDatabase.SaveAssets();
+        }
+        finally
+        {
+            if (active.IsValid() && active.isLoaded) UnityEngine.SceneManagement.SceneManager.SetActiveScene(active);
+            EditorSceneManager.CloseScene(preview, true);
+        }
     }
 
     static string Local(string root, string relative)

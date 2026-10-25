@@ -125,10 +125,13 @@ foreach ($file in @('Program.cs', 'EndfieldChenTool.csproj', 'NuGet.Config', 'bu
 Copy-Item -LiteralPath (Join-Path $repoRoot 'Framework') -Destination $guiSource -Recurse -Force
 $workspaceTemplates = Join-Path $packageRoot 'templates\workspace'
 New-Item -ItemType Directory -Path $workspaceTemplates -Force | Out-Null
-foreach ($file in @('CharacterAnimationAdapter.cs', 'KneeDiagnostics.cs')) {
+foreach ($file in @('CharacterAnimationAdapter.cs', 'CharacterPreviewControls.cs', 'KneeDiagnostics.cs')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('templates\workspace\' + $file)) -Destination (Join-Path $workspaceTemplates $file) -Force
 }
 $verificationSource = Join-Path $packageRoot 'sources\verification\WorkspaceExportVerification'
+$compilationSource = Join-Path $packageRoot 'sources\compilation\UnityTemplates'
+New-Item -ItemType Directory -Path $compilationSource -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $repoRoot 'sources\compilation\UnityTemplates\UnityTemplates.csproj') -Destination $compilationSource -Force
 New-Item -ItemType Directory -Path $verificationSource -Force | Out-Null
 foreach ($file in @('Program.cs', 'WorkspaceExportVerification.csproj')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceExportVerification\' + $file)) -Destination (Join-Path $verificationSource $file) -Force
@@ -136,6 +139,6 @@ foreach ($file in @('Program.cs', 'WorkspaceExportVerification.csproj')) {
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.8.0-unity-generation-preview'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.9.0-animation-preview-scene'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

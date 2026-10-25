@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <UnityEditorDirectory Condition="'$(UnityEditorDirectory)' == ''">D:\Unity 3D\Editor\6000.0.84f1\Editor</UnityEditorDirectory>
+  </PropertyGroup>
+  <!-- Compile only: does not start Unity or execute the templates. -->
+  <ItemGroup>
+    <Compile Include="../../../templates/workspace/*.cs" />
+    <Reference Include="$(UnityEditorDirectory)/Data/Managed/UnityEngine/*.dll" />
+    <Reference Include="$(UnityEditorDirectory)/Data/Managed/UnityEditor/*.dll" />
+  </ItemGroup>
+</Project>

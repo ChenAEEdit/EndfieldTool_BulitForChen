@@ -18,6 +18,7 @@ public sealed record UnityGenerationRun
     public string LogPath { get; init; } = "";
     public string ReceiptPath { get; init; } = "";
     public string? EditorBackup { get; init; }
+    public string? RuntimeBackup { get; init; }
     public DateTimeOffset StartedAt { get; init; } = DateTimeOffset.Now;
     public DateTimeOffset? FinishedAt { get; init; }
     public int? ExitCode { get; init; }
@@ -30,7 +31,9 @@ public sealed record UnityGenerationOutcome(ObjectOperationResult Result, UnityG
 public sealed class UnityAdaptationRunner
 {
     private const string EditorRelative = "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs";
+    private const string RuntimeRelative = "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs";
     private const string PreviousEditorHash = "D7AC1920F4772F739F2E849FD9AFD858F5ECDD62A093227BAFB07C60A35320FA";
+    private const string Previous08EditorHash = "B0A74860B0F80E0186EFAB5FC3D3EB34021BA10C6D4DF474B5DDE7C3E65C399B";
 
     public Task<UnityGenerationOutcome> ExecuteAsync(SavedPlan saved, IProgress<ExtractionProgress> progress,
         CancellationToken token) => Task.Run(() => ExecuteCoreAsync(saved, progress, token), token);
@@ -79,7 +82,10 @@ public sealed class UnityAdaptationRunner
                 Publish("copy", "正在复制经摘要核对的独立适配包。", 12);
                 InstallAssets(preparation, packageFiles, assetRoot, work, invocation, token);
                 Publish("editor", "正在准备 Unity 编辑器入口。", 30);
-                run = run with { EditorBackup = InstallEditor(packageFiles[EditorRelative], run.Project, work, runRoot, token) };
+                if (packageFiles.TryGetValue(RuntimeRelative, out var runtimeScript))
+                    run = run with { RuntimeBackup = InstallScript(runtimeScript, RuntimeRelative, "preview-controls-install.json", run.Project, work, runRoot, token) };
+                run = run with { EditorBackup = InstallScript(packageFiles[EditorRelative], EditorRelative, "adapter-install.json", run.Project, work, runRoot, token) };
+                RequireSharedScripts(packageFiles, run.Project, token);
                 Publish("editor", "适配包已导入现有项目。", 35);
                 string generated = Path.Combine(assetRoot, "Generated");
                 if (Directory.Exists(generated) && File.Exists(Path.Combine(generated, "adaptation-result.json")))
@@ -157,10 +163,11 @@ public sealed class UnityAdaptationRunner
                 if (receipt.Schema != "endfield-unity-invocation-v1" || receipt.InvocationId != invocation
                     || receipt.ConfigPath != configPath || receipt.ConfigSha256 != preparation.UnityConfigSha256 || !receipt.Succeeded)
                     throw new InvalidDataException("本次 Unity 回执无效或生成失败：" + receipt.Error);
+                RequireSharedScripts(packageFiles, run.Project, token);
                 RequirePackageInstalled(preparation, packageFiles, assetRoot, token);
                 var result = await UnityAdaptationResults.ImportLockedAsync(saved, token, invocation);
                 run = run with { Status = "adapted_unverified", FinishedAt = DateTimeOffset.Now };
-                Publish("complete", "Unity 原生动画、控制器和 Prefab 已生成并核对；尚未验证播放。", 100);
+                Publish("complete", "Unity 原生动画、控制器和 Prefab" + (result.UnityPreviewScene == null ? "" : "、独立预览场景") + "已生成并核对；尚未验证播放。", 100);
                 return new(result, run);
             }
             catch (Exception error)
@@ -246,10 +253,12 @@ public sealed class UnityAdaptationRunner
         if (!inputs.Contains(assetRoot + "/" + config.Model)
             || config.Clips.Any(clip => !inputs.Contains(assetRoot + "/" + clip.Source))
             || files.Keys.Any(key => key.StartsWith(assetRoot + "/", StringComparison.Ordinal) && key != configRelative && !inputs.Contains(key))
-            || files.Keys.Any(key => key != EditorRelative && key != "使用说明.md" && !key.StartsWith(assetRoot + "/", StringComparison.Ordinal)))
+            || files.Keys.Any(key => key != EditorRelative && key != RuntimeRelative && key != "使用说明.md" && !key.StartsWith(assetRoot + "/", StringComparison.Ordinal)))
             throw new InvalidDataException("适配包包含未声明的内容或缺少模型／动画。");
         // Older packages lack the batch entry. Ask for a fresh package rather than altering its manifest.
-        if (config.AdapterVersion != "0.8.0") throw new InvalidDataException("自动生成需要 0.8.0 适配包，请重新生成；旧包仍可使用手动菜单。");
+        if (config.AdapterVersion is not ("0.8.0" or "0.9.0")) throw new InvalidDataException("自动生成需要 0.8.0 或 0.9.0 适配包，请重新生成；更旧的包仍可使用手动菜单。");
+        if (config.AdapterVersion == "0.9.0" && !files.ContainsKey(RuntimeRelative))
+            throw new InvalidDataException("适配包缺少预览播放脚本，请重新生成完整包。");
         return files;
     }
 
@@ -299,18 +308,20 @@ public sealed class UnityAdaptationRunner
         }
     }
 
-    private static string? InstallEditor(ObjectOutputFile source, string project, string work, string runRoot, CancellationToken token)
+    private static string? InstallScript(ObjectOutputFile source, string relative, string markerName,
+        string project, string work, string runRoot, CancellationToken token)
     {
-        string destination = UnityProjectFiles.Within(project, EditorRelative);
-        string marker = UnityProjectFiles.Within(work, "adapter-install.json");
+        string destination = UnityProjectFiles.Within(project, relative);
+        string marker = UnityProjectFiles.Within(work, markerName);
         string? backup = null;
         string? priorHash = File.Exists(destination) ? UnityProjectFiles.Hash(destination, token) : null;
         if (priorHash != null && priorHash != source.Sha256)
         {
             var installed = File.Exists(marker) ? JsonFiles.Read<EditorInstall>(marker) : null;
-            if (priorHash != PreviousEditorHash && (installed?.Schema != "endfield-unity-editor-install-v1" || installed.Sha256 != priorHash))
+            bool knownEditor = relative == EditorRelative && (priorHash == PreviousEditorHash || priorHash == Previous08EditorHash);
+            if (!knownEditor && (installed?.Schema != "endfield-unity-editor-install-v1" || installed.Sha256 != priorHash))
                 throw new InvalidDataException("项目中的适配脚本不是已记录版本或有手工修改，已保留。请先合并脚本，或另存该脚本后重新操作。");
-            backup = Path.Combine(runRoot, "project-backup", "CharacterAnimationAdapter.cs");
+            backup = Path.Combine(runRoot, "project-backup", Path.GetFileName(relative));
             Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
             File.Copy(destination, backup, overwrite: false);
             if (UnityProjectFiles.Hash(backup, token) != priorHash) throw new IOException("适配脚本备份摘要不符。");
@@ -333,6 +344,12 @@ public sealed class UnityAdaptationRunner
     private static bool HasGeneratedAssets(string path) => Directory.Exists(path)
         && (Directory.EnumerateDirectories(path).Any() || Directory.EnumerateFiles(path).Any(file =>
             Path.GetFileName(file) != "adaptation-result.json" && !file.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)));
+
+    private static void RequireSharedScripts(Dictionary<string, ObjectOutputFile> files, string project, CancellationToken token)
+    {
+        foreach (string relative in new[] { EditorRelative, RuntimeRelative })
+            if (files.TryGetValue(relative, out var file)) UnityProjectFiles.Verify(UnityProjectFiles.Within(project, relative), file, token);
+    }
 
     private sealed record EditorInstall
     {

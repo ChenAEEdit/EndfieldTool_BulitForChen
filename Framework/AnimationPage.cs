@@ -14,6 +14,7 @@ internal sealed partial class WorkspaceForm
     private readonly CheckBox dropUnmatched = new() { Text = "忽略未匹配轨道并记录（默认遇到未匹配路径时停止）", AutoSize = true };
     private readonly CheckBox dropSceneTranslation = new() { Text = "移除场景对象本身的位置轨道，保留骨架位移", Checked = true, AutoSize = true };
     private readonly CheckBox forceLoop = new() { Text = "强制循环（未勾选时沿用源动画设置）", AutoSize = true };
+    private readonly CheckBox createPreviewScene = new() { Text = "生成可切换、暂停和重播的独立预览场景", Checked = true, AutoSize = true };
     private readonly TextBox adaptationDetails = ReadOnlyText();
     private readonly Label adaptationHint = Note("");
 
@@ -21,7 +22,7 @@ internal sealed partial class WorkspaceForm
     {
         var page = Page("动画适配");
         var layout = Grid(1, 5);
-        foreach (var height in new[] { 90, 276, 85, 85 }) layout.RowStyles.Add(new(SizeType.Absolute, height));
+        foreach (var height in new[] { 90, 276, 100, 85 }) layout.RowStyles.Add(new(SizeType.Absolute, height));
         layout.RowStyles.Add(new(SizeType.Percent, 100));
         layout.Controls.Add(adaptationHint, 0, 0);
         UpdateAdaptationHint();
@@ -34,7 +35,7 @@ internal sealed partial class WorkspaceForm
         settings.Controls.Add(Note("排除后代（每行一个父路径）"), 0, 3); settings.Controls.Add(excludedDescendants, 1, 3);
         settings.Controls.Add(Note("排除节点（每行一个路径）"), 0, 4); settings.Controls.Add(excludedNodes, 1, 4);
         layout.Controls.Add(settings, 0, 1);
-        var flags = Flow(); flags.Controls.AddRange([dropUnmatched, dropSceneTranslation, forceLoop]); layout.Controls.Add(flags, 0, 2);
+        var flags = Flow(); flags.Controls.AddRange([dropUnmatched, dropSceneTranslation, forceLoop, createPreviewScene]); layout.Controls.Add(flags, 0, 2);
         var actions = Flow();
         var prepare = new Button { Text = "生成 Unity 适配包", Width = 185, Height = 35 };
         prepare.Click += async (_, _) => await RunWorkflowAsync("prepare");
@@ -64,6 +65,17 @@ internal sealed partial class WorkspaceForm
             if (!Directory.Exists(path)) throw new InvalidDataException("尚无生成目录，请先导入并生成适配。");
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         })));
+        actions.Controls.Add(ActionButton("定位预览场景", () => RunAction(() =>
+        {
+            if (inventoryTask == null) throw new InvalidDataException("请先载入任务。");
+            var result = UnityAdaptationResults.ValidatePreparation(inventoryTask);
+            string scene = UnityProjectFiles.Within(inventoryTask.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated/CharacterPreview.unity");
+            if (result.UnityPreviewScene == null || !result.Adapted || !File.Exists(scene))
+                throw new InvalidDataException("请勾选生成预览场景，准备新包、生成并核对结果后重试。");
+            var info = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+            info.ArgumentList.Add("/select," + scene); Process.Start(info);
+            adaptationDetails.AppendText("\r\n预览场景：" + scene + "\r\n在当前项目的 Unity Project 窗口打开此场景，点击 Play 后在 Game 视图切换、暂停或重播。\r\n");
+        })));
         actions.Controls.Add(ActionButton("查看使用说明", () => RunAction(() => OpenLocal(Path.Combine(AppContext.BaseDirectory, "docs", "动画适配说明.md")))));
         foreach (Control action in actions.Controls) objectActions.Add(action);
         layout.Controls.Add(actions, 0, 3); layout.Controls.Add(adaptationDetails, 0, 4); page.Controls.Add(layout);
@@ -86,6 +98,7 @@ internal sealed partial class WorkspaceForm
     {
         ModelImportScale = modelImportScale.Value, PositionScale = animationPositionScale.Value,
         DropUnmatched = dropUnmatched.Checked, DropSceneTranslation = dropSceneTranslation.Checked, ForceLoop = forceLoop.Checked,
+        CreatePreviewScene = createPreviewScene.Checked,
         NormalizeRoot = normalizeRoot.Text.Trim(), ExcludedDescendants = PathsFrom(excludedDescendants), ExcludedNodes = PathsFrom(excludedNodes)
     };
 

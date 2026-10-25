@@ -186,6 +186,7 @@ public sealed record AnimationPreparationOptions
     public bool DropUnmatched { get; init; }
     public bool DropSceneTranslation { get; init; } = true;
     public bool ForceLoop { get; init; }
+    public bool CreatePreviewScene { get; init; } = true;
     public string NormalizeRoot { get; init; } = "";
     public List<string> ExcludedDescendants { get; init; } = [];
     public List<string> ExcludedNodes { get; init; } = [];
@@ -220,6 +221,7 @@ public sealed record ObjectOperationResult
     public string? UnityConfigSha256 { get; init; }
     public int ExpectedAdaptedClips { get; init; }
     public string? UnityReportPath { get; init; }
+    public string? UnityPreviewScene { get; init; }
     public bool Adapted { get; init; }
     public bool PlaybackVerified { get; init; }
     public List<ObjectOutputFile> Files { get; init; } = [];

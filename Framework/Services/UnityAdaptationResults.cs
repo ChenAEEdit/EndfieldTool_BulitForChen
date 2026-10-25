@@ -77,7 +77,8 @@ public static class UnityAdaptationResults
             || expectedInvocationId != null && report.InvocationId != expectedInvocationId
             || report.Clips.Count != result.ExpectedAdaptedClips || report.Clips.Any(row => !row.Adapted))
             throw new InvalidDataException("Unity 适配未完成，或结果不属于本次适配包；请查看 Unity 报告。");
-        if (report.Outputs.Count != report.Clips.Count + 2 || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
+        bool preview = config.Preview?.Enabled == true;
+        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
             throw new InvalidDataException("Unity 适配输出不完整或重复。");
         var outputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in report.Outputs)
@@ -96,12 +97,35 @@ public static class UnityAdaptationResults
                     && UnityProjectFiles.Within(project, native.Output).Equals(Path.Combine(generated, "Clip_" + clip.Id + ".anim"), StringComparison.OrdinalIgnoreCase)
                     && outputPaths.Contains(UnityProjectFiles.Within(project, native.Output))) != 1))
             throw new InvalidDataException("Unity 适配结果缺少控制器、Prefab 或本次选择的动画。");
+        string? previewPath = preview ? Path.Combine(generated, "CharacterPreview.unity") : null;
+        if (preview && (!report.PreviewCreated || string.IsNullOrEmpty(report.PreviewScene)
+            || !UnityProjectFiles.Within(project, report.PreviewScene).Equals(previewPath, StringComparison.OrdinalIgnoreCase)
+            || !outputPaths.Contains(previewPath!) || config.Clips.Any(clip => report.Clips.All(native =>
+                native.Output != result.UnityAssetRoot + "/Generated/Clip_" + clip.Id + ".anim" || native.State != "Base Layer.Clip_" + clip.Id))))
+            throw new InvalidDataException("预览场景或可切换动画状态不完整。");
+        if (config.AdapterVersion == "0.9.0")
+        {
+            var metadata = inputPaths.Concat(outputPaths).Concat(new[] {
+                UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs"),
+                UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs") })
+                .Select(path => path + ".meta").ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (report.Metadata.Count != metadata.Count)
+                throw new InvalidDataException("Unity 元数据清单不完整，不能确认资产引用。");
+            foreach (var file in report.Metadata)
+            {
+                string path = UnityProjectFiles.Within(project, file.Path);
+                if (!metadata.Remove(path) || !File.Exists(path) || file.Bytes <= 0 || new FileInfo(path).Length != file.Bytes
+                    || await HashAsync(path, token) != file.Sha256)
+                    throw new InvalidDataException("Unity 元数据缺失或已变化，请保留现有编辑并重新准备独立包。");
+            }
+        }
         if (await HashAsync(reportPath, token) != reportHash || await HashAsync(configPath, token) != result.UnityConfigSha256
             || ValidatePreparation(saved).RunId != result.RunId)
             throw new InvalidDataException("读取期间适配报告、配置或任务发生变化，请重新读取。");
         token.ThrowIfCancellationRequested();
         result = result with { Status = "adapted_unverified", Adapted = true, PlaybackVerified = false,
-            UnityReportPath = reportPath, Message = $"已读取 Unity 原生适配结果：{report.Clips.Count} 条动画；尚未验证播放。" };
+            UnityReportPath = reportPath, UnityPreviewScene = previewPath,
+            Message = $"已读取 Unity 原生适配结果：{report.Clips.Count} 条动画" + (preview ? "及独立预览场景" : "") + "；尚未验证播放。" };
         JsonFiles.Write(Path.Combine(taskRoot, "objects", result.RunId, "operation.json"), result);
         JsonFiles.Write(Path.Combine(taskRoot, "objects", "preparation.json"), result);
         if (ObjectWorkflow.ReadResult(saved)?.RunId == result.RunId)
@@ -118,11 +142,14 @@ public static class UnityAdaptationResults
         public string TaskId { get; init; } = "";
         public string RunId { get; init; } = "";
         public string Model { get; init; } = "";
+        public string AdapterVersion { get; init; } = "";
+        public PreviewOptions? Preview { get; init; }
         public List<Input> Inputs { get; init; } = [];
         public List<Clip> Clips { get; init; } = [];
     }
     private sealed record Input(string Path, string Sha256);
     private sealed record Clip(string Id, string Name, string Source);
+    private sealed record PreviewOptions(bool Enabled);
     private sealed record NativeReport
     {
         public string Schema { get; init; } = "";
@@ -133,13 +160,17 @@ public static class UnityAdaptationResults
         public string Status { get; init; } = "";
         public bool Adapted { get; init; }
         public bool PlaybackVerified { get; init; }
+        public bool PreviewCreated { get; init; }
+        public string PreviewScene { get; init; } = "";
         public List<NativeClip> Clips { get; init; } = [];
         public List<ObjectOutputFile> Outputs { get; init; } = [];
+        public List<ObjectOutputFile> Metadata { get; init; } = [];
     }
     private sealed record NativeClip
     {
         public bool Adapted { get; init; }
         public string Name { get; init; } = "";
         public string Output { get; init; } = "";
+        public string State { get; init; } = "";
     }
 }

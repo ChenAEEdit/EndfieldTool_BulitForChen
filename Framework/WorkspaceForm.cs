@@ -47,7 +47,7 @@ internal sealed partial class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · Unity 自动生成预览 0.8.0";
+        Text = "终末地角色工作台 · 动画预览场景 0.9.0";
         Font = new Font("Microsoft YaHei UI", 10);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
@@ -344,7 +344,7 @@ internal sealed partial class WorkspaceForm : Form
         AddPath(table, 4, "Blender", "blender", options.Blender, true);
         layout.Controls.Add(table, 0, 1);
         var flags = Flow();
-        importUnity.Text = "自动创建播放场景（待接入）";
+        importUnity.Text = "预览场景请从动画适配页生成";
         checkWeights.Text = "权重检查（待接入）";
         verifyPlayback.Text = "播放检查（待接入）";
         importUnity.Checked = checkWeights.Checked = verifyPlayback.Checked = false;
