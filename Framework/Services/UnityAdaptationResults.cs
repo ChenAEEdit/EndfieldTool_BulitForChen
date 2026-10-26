@@ -78,7 +78,7 @@ public static class UnityAdaptationResults
             || report.Clips.Count != result.ExpectedAdaptedClips || report.Clips.Any(row => !row.Adapted))
             throw new InvalidDataException("Unity 适配未完成，或结果不属于本次适配包；请查看 Unity 报告。");
         bool preview = config.Preview?.Enabled == true;
-        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) + report.Materials.Count || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
+        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) + report.Materials.Count + (string.IsNullOrEmpty(report.HumanAvatar) ? 0 : 1) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
             throw new InvalidDataException("Unity 适配输出不完整或重复。");
         var outputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in report.Outputs)
@@ -103,6 +103,11 @@ public static class UnityAdaptationResults
             || !outputPaths.Contains(previewPath!) || config.Clips.Any(clip => report.Clips.All(native =>
                 native.Output != result.UnityAssetRoot + "/Generated/Clip_" + clip.Id + ".anim" || native.State != "Base Layer.Clip_" + clip.Id))))
             throw new InvalidDataException("预览场景或可切换动画状态不完整。");
+        if (report.Clips.Any(clip => clip.Humanoid) != !string.IsNullOrEmpty(report.HumanAvatar))
+            throw new InvalidDataException("动画播放模式与人形 Avatar 清单不一致。");
+        if (!string.IsNullOrEmpty(report.HumanAvatar) && (report.HumanAvatar != result.UnityAssetRoot + "/Generated/CharacterHumanAvatar.asset"
+            || !outputPaths.Contains(UnityProjectFiles.Within(project, report.HumanAvatar))))
+            throw new InvalidDataException("人形 Avatar 输出缺失或不属于本次包。");
         var materialPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var material in report.Materials)
         {
@@ -111,7 +116,7 @@ public static class UnityAdaptationResults
                 || Path.GetExtension(path) != ".mat" || !outputPaths.Contains(path) || !materialPaths.Add(path))
                 throw new InvalidDataException("生成的预览材质路径无效或重复。");
         }
-        if (config.AdapterVersion is "0.9.0" or "0.10.0")
+        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1")
         {
             var metadata = inputPaths.Concat(outputPaths).Concat(new[] {
                 UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs"),
@@ -170,6 +175,7 @@ public static class UnityAdaptationResults
         public bool PlaybackVerified { get; init; }
         public bool PreviewCreated { get; init; }
         public string PreviewScene { get; init; } = "";
+        public string? HumanAvatar { get; init; }
         public List<NativeClip> Clips { get; init; } = [];
         public List<ObjectOutputFile> Outputs { get; init; } = [];
         public List<ObjectOutputFile> Metadata { get; init; } = [];
@@ -178,6 +184,7 @@ public static class UnityAdaptationResults
     private sealed record NativeClip
     {
         public bool Adapted { get; init; }
+        public bool Humanoid { get; init; }
         public string Name { get; init; } = "";
         public string Output { get; init; } = "";
         public string State { get; init; } = "";

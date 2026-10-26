@@ -148,7 +148,7 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
             register_output(model["fbx"], "FBX")
             for texture in model.get("textures", []):
                 register_output(texture["path"], "Texture")
-            for field in ("material_report", "material_properties_report", "avatar_retarget"):
+            for field in ("material_report", "material_properties_report", "avatar_retarget", "avatar_human_candidates"):
                 if model.get(field):
                     register_output(model[field], "ModelMetadata")
             if model.get("unresolved_external_file_count", 0):

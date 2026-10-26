@@ -29,10 +29,12 @@ public static class UnityDiagnosticReport
             if (diagnostics.TryGetProperty("warnings", out var warnings))
                 foreach (var warning in warnings.EnumerateArray()) text.AppendLine("\n- " + Escape(warning.GetString() ?? ""));
         }
-        text.AppendLine("\n## 动画绑定\n\n| 片段 | 保留曲线 | 未匹配路径 | 结果／错误 |\n| --- | ---: | ---: | --- |");
+        text.AppendLine("\n人形映射来源：" + Escape(Value(report, "humanMappingSource")) + "\n");
+        text.AppendLine("\n## 动画绑定\n\n| 片段 | 人形播放 | 动态肌肉 | 主体旋转曲线 | 保留曲线 | 未匹配路径 | 结果／错误 |\n| --- | --- | ---: | ---: | ---: | ---: | --- |");
         if (report.TryGetProperty("clips", out var clips) && clips.ValueKind == JsonValueKind.Array)
             foreach (var clip in clips.EnumerateArray())
-                text.AppendLine("| " + Escape(Value(clip, "name")) + " | " + Value(clip, "retainedBindings") + " | "
+                text.AppendLine("| " + Escape(Value(clip, "name")) + " | " + Value(clip, "humanoid") + " | " + Value(clip, "movingMuscles")
+                    + " | " + Value(clip, "movingBodyRotationChannels") + " | " + Value(clip, "retainedBindings") + " | "
                     + (clip.TryGetProperty("unmatched", out var unknown) ? unknown.GetArrayLength() : 0) + " | "
                     + Escape(Value(clip, "adapted") + " " + Value(clip, "error")) + " |");
         text.AppendLine("\n## 基础预览材质\n\n| 材质 | 已绑定基础贴图 | 贴图 |\n| --- | --- | --- |");

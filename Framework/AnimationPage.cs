@@ -26,7 +26,7 @@ internal sealed partial class WorkspaceForm
         var layout = Grid(1, 6);
         layout.RowStyles.Add(new(SizeType.Absolute, 69));
         layout.RowStyles.Add(new(SizeType.Absolute, 48));
-        layout.RowStyles.Add(new(SizeType.Absolute, 44));
+        layout.RowStyles.Add(new(SizeType.Absolute, 84));
         layout.RowStyles.Add(new(SizeType.AutoSize));
         layout.RowStyles.Add(new(SizeType.Percent, 100));
         layout.RowStyles.Add(new(SizeType.Absolute, 40));
@@ -35,6 +35,9 @@ internal sealed partial class WorkspaceForm
         previewAction.Click += async (_, _) => await RunWorkflowAsync("preview");
         objectActions.Add(previewAction); layout.Controls.Add(previewAction, 0, 1);
         var resultActions = Flow();
+        var open = new Button { Text = "打开并播放预览", Width = 185, Height = 35 };
+        open.Click += async (_, _) => await ReadAdaptationResultAsync(openPreview: true);
+        resultActions.Controls.Add(open);
         resultActions.Controls.Add(ActionButton("定位预览场景", () => RunAction(LocatePreview)));
         resultActions.Controls.Add(ActionButton("查看本次日志", () => RunAction(() =>
         {
@@ -173,7 +176,7 @@ internal sealed partial class WorkspaceForm
         NormalizeRoot = normalizeRoot.Text.Trim(), ExcludedDescendants = PathsFrom(excludedDescendants), ExcludedNodes = PathsFrom(excludedNodes)
     };
 
-    private async Task ReadAdaptationResultAsync(bool generate = false)
+    private async Task ReadAdaptationResultAsync(bool generate = false, bool openPreview = false)
     {
         if (scanCancellation != null || extractionCancellation != null) return;
         if (inventoryTask == null) { status.Text = "请先载入任务。"; return; }
@@ -189,7 +192,18 @@ internal sealed partial class WorkspaceForm
         try
         {
             ObjectOperationResult result;
-            if (generate)
+            string? openMessage = null;
+            if (openPreview)
+            {
+                var progress = new Progress<ExtractionProgress>(row =>
+                {
+                    if (IsDisposed || cancellation.IsCancellationRequested) return;
+                    status.Text = row.Message; scanProgress.Value = Math.Clamp(row.Percent, 0, 100);
+                });
+                var outcome = await new UnityPreviewLauncher().OpenAsync(inventoryTask, progress, cancellation.Token);
+                result = outcome.Result; openMessage = outcome.Message;
+            }
+            else if (generate)
             {
                 var progress = new Progress<ExtractionProgress>(row =>
                 {
@@ -203,12 +217,13 @@ internal sealed partial class WorkspaceForm
             }
             else result = await UnityAdaptationResults.ImportAsync(inventoryTask, cancellation.Token);
             scanProgress.Value = 100;
-            adaptationDetails.Text = PreviewResultText(inventoryTask, result); status.Text = result.Message;
+            adaptationDetails.Text = PreviewResultText(inventoryTask, result) + (openMessage == null ? "" : "\r\n\r\n" + openMessage);
+            status.Text = openMessage ?? result.Message;
             foreach (ListViewItem row in tasks.Items)
                 if (((SavedPlan)row.Tag!).Plan.Id == inventoryTask.Plan.Id) row.SubItems[2].Text = ObjectStatus(result.Status);
             ShowTask();
         }
-        catch (OperationCanceledException) { status.Text = generate ? "已取消导入／生成；本次启动的 Unity 已结束，记录和已有文件保留。" : "已取消读取适配结果。"; }
+        catch (OperationCanceledException) { status.Text = openPreview ? "已停止等待打开预览。交互式 Unity 编辑器保留，请在 Unity 中查看请求是否已执行。" : generate ? "已取消导入／生成；本次启动的 Unity 已结束，记录和已有文件保留。" : "已取消读取适配结果。"; }
         catch (Exception error) { status.Text = "适配操作未完成：" + error.Message; ShowPreviewFailure(inventoryTask, error); }
         finally
         {

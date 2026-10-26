@@ -122,6 +122,7 @@ string? fbxPath = null;
 string? materialReportPath = null;
 string? materialPropertyReportPath = null;
 string? avatarRetargetPath = null;
+string? humanCandidatesPath = null;
 string[] texturePaths = [];
 string? exportError = null;
 
@@ -178,6 +179,15 @@ if (!listOnly && selected is not null)
                 .ToArray(),
         }, jsonOptions));
 
+        humanCandidatesPath = Path.Combine(output, "avatar_human_candidates.json");
+        File.WriteAllText(humanCandidatesPath, JsonSerializer.Serialize(new
+        {
+            schema = "endfield-human-mapping-candidates-v1",
+            candidates = objects.OfType<Avatar>().Where(item => item.m_HumanDescription?.m_Human.Count >= 15)
+                .Select(item => new { name = item.m_Name, sourceAsset = item.assetsFile.fileName,
+                    sourceBundle = item.assetsFile.originalPath, pathId = item.m_PathID.ToString(),
+                    bones = item.m_HumanDescription!.m_Human.Select(bone => new { bone.m_BoneName, bone.m_HumanName }).ToArray() }).ToArray(),
+        }, jsonOptions));
         if (selectedAvatar is not null)
         {
             avatarRetargetPath = Path.Combine(output, "avatar_retarget.json");
@@ -211,6 +221,7 @@ var report = new
     viable_root_count = viable.Length,
     selected = selected is null ? null : DescribeProbe(selected),
     avatar_retarget = avatarRetargetPath,
+    avatar_human_candidates = humanCandidatesPath,
     avatar_retarget_available = avatarRetargetPath is not null && File.Exists(avatarRetargetPath),
     selected_avatar = selectedAvatar is null ? null : DescribeAvatarProbe(selectedAvatar),
     avatar_candidates = avatarCandidates.Select(DescribeAvatarProbe).ToArray(),

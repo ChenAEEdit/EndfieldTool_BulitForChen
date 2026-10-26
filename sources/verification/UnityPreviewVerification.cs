@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -21,7 +22,9 @@ public static class UnityPreviewVerification
         public bool mouseInteractionTested = false;
         public int meshes, nonFiniteVertices;
         public float height, firstTime, lastTime;
+        public List<ClipCheck> clips = new List<ClipCheck>();
     }
+    [Serializable] class ClipCheck { public string name; public float length, firstTime, lastTime, humanScale; public bool looping, timeAdvanced, human; public int movingTransforms, movingBodyBones; public string[] mainBoneMotions; }
     static Request request;
     static Result result;
     static CharacterPreviewControls controls;
@@ -29,6 +32,9 @@ public static class UnityPreviewVerification
     static int phase;
     static float pausedTime;
     static double pausedAt;
+    static int clipIndex;
+    static double clipStarted;
+    static float clipFirstTime;
     static UnityPreviewVerification() { if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ENDFIELD_PREVIEW_CHECK"))) EditorApplication.update += Tick; }
     public static void Begin()
     {
@@ -48,7 +54,9 @@ public static class UnityPreviewVerification
         });
         SessionState.SetBool("EndfieldPreviewPose." + request.invocation, rest);
         result.savedPoseMatchesPrefab = rest;
-        EditorApplication.isPlaying = true;
+        if (Environment.GetEnvironmentVariable("ENDFIELD_PREVIEW_USE_ENTRY") == "1")
+            typeof(EndfieldCharacterWorkbench.Editor.CharacterAnimationAdapter).GetMethod("OpenRequestedPreview", BindingFlags.Public | BindingFlags.Static).Invoke(null, null);
+        else EditorApplication.isPlaying = true;
     }
     static void Load()
     {
@@ -94,13 +102,50 @@ public static class UnityPreviewVerification
                     result.switchClip = controls.selected == 1 && controls.animator.GetCurrentAnimatorStateInfo(0).fullPathHash == Animator.StringToHash(controls.statePaths[1]);
                     Geometry();
                 }
-                result.passed = result.actualPlay && result.savedPoseMatchesPrefab && result.timeAdvanced && result.seek && result.restart && result.pause && result.speed && result.switchClip && result.meshes > 0
-                    && result.nonFiniteVertices == 0 && result.height > .5f && result.height < 3;
-                Finish(result.passed ? 0 : 1);
+                clipIndex = 0; BeginClipCheck(); phase = 3;
+            }
+            else if (phase == 3 && EditorApplication.timeSinceStartup - clipStarted > .3)
+            {
+                var clip = controls.clips[clipIndex];
+                float currentTime = controls.animator.GetCurrentAnimatorStateInfo(0).normalizedTime;
+                controls.SetPaused(true); controls.SeekNormalized(.1f);
+                var bones = controls.animator.GetComponentsInChildren<Transform>(true);
+                var positions = bones.Select(item => item.localPosition).ToArray();
+                var rotations = bones.Select(item => item.localRotation).ToArray();
+                var scales = bones.Select(item => item.localScale).ToArray();
+                controls.SeekNormalized(.7f);
+                int moving = Enumerable.Range(0, bones.Length).Count(i => Vector3.Distance(positions[i], bones[i].localPosition) > .000001f
+                    || Quaternion.Angle(rotations[i], bones[i].localRotation) > .05f || Vector3.Distance(scales[i], bones[i].localScale) > .000001f);
+                Geometry();
+                var main = Enumerable.Range(0, bones.Length).Where(i => new[] { "Bip001_L_Thigh", "Bip001_R_Thigh", "Bip001_L_UpperArm", "Bip001_R_UpperArm", "Bip001_Spine" }.Contains(bones[i].name)).ToArray();
+                var display = typeof(CharacterPreviewControls).GetMethod("DisplayName");
+                result.clips.Add(new ClipCheck { name = display == null ? clip.name : (string)display.Invoke(controls, new object[] { clipIndex }),
+                    human = controls.animator.isHuman, humanScale = controls.animator.isHuman ? controls.animator.humanScale : 1,
+                    movingBodyBones = main.Count(i => Quaternion.Angle(rotations[i], bones[i].localRotation) > .05f), length = clip.length, looping = clip.isLooping,
+                    firstTime = clipFirstTime, lastTime = currentTime, timeAdvanced = currentTime > clipFirstTime + .001f, movingTransforms = moving,
+                    mainBoneMotions = Enumerable.Range(0, bones.Length).Where(i => new[] { "Bip001_L_Thigh", "Bip001_R_Thigh", "Bip001_L_UpperArm", "Bip001_R_UpperArm", "Bip001_Spine" }.Contains(bones[i].name))
+                        .Select(i => bones[i].name + ": " + Quaternion.Angle(rotations[i], bones[i].localRotation).ToString("F3")).ToArray() });
+                if (clip.isLooping || clip.name.Contains("loop")) Capture("loop.png", false);
+                clipIndex++;
+                if (clipIndex < controls.clips.Length) BeginClipCheck();
+                else
+                {
+                    result.passed = result.actualPlay && result.savedPoseMatchesPrefab && result.timeAdvanced && result.seek && result.restart && result.pause && result.speed && result.switchClip && result.meshes > 0
+                        && result.nonFiniteVertices == 0 && result.height > .5f && result.height < 3
+                        && result.clips.Count == controls.clips.Length && result.clips.All(item => item.timeAdvanced && item.length > 0 && item.movingTransforms > 0
+                            && (Environment.GetEnvironmentVariable("ENDFIELD_REQUIRE_MAIN_BODY") != "1" || item.movingBodyBones > 0));
+                    Finish(result.passed ? 0 : 1);
+                }
             }
             if (elapsed > 60) throw new Exception("Preview Play check timed out.");
         }
         catch (Exception error) { if (result == null) result = new Result(); result.error = error.ToString(); Finish(1); }
+    }
+    static void BeginClipCheck()
+    {
+        controls.SetSpeed(1); controls.SetPaused(false); controls.SelectClip(clipIndex);
+        clipFirstTime = controls.animator.GetCurrentAnimatorStateInfo(0).normalizedTime;
+        clipStarted = EditorApplication.timeSinceStartup;
     }
     static void Geometry()
     {

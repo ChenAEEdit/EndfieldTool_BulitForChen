@@ -38,7 +38,8 @@ public static class CharacterAnimationAdapter
         public string name, output, error, state;
         public int sourceBindings, retainedBindings, skippedAnimator, skippedOther, droppedSceneTranslation,
             remappedBindings, excludedBindings, repairedTangents;
-        public bool adapted;
+        public bool adapted, humanoid;
+        public int movingMuscles, movingBodyRotationChannels;
         public string[] unmatched = new string[0];
     }
     [Serializable] public class OutputFile { public string path, sha256; public long bytes; }
@@ -65,6 +66,7 @@ public static class CharacterAnimationAdapter
         public MaterialPreview[] materials = new MaterialPreview[0];
         public Diagnostics diagnostics;
         public float modelImportScale, positionScale;
+        public string humanAvatar, humanMappingSource;
     }
 
     [Serializable] public class BatchReceipt
@@ -112,9 +114,159 @@ public static class CharacterAnimationAdapter
     [MenuItem("Endfield Character Tool/适配所选配置并生成预览 Prefab")]
     public static void BuildSelected()
     {
-        string path = AssetDatabase.GetAssetPath(Selection.activeObject);
-        if (Path.GetFileName(path) != "adaptation.json") throw new Exception("请在 Project 中选择生成包内的 adaptation.json。");
-        Build(path);
+        string path = ResolvePreviewConfig();
+        string generated = Path.GetDirectoryName(path) + "/Generated";
+        if (!Directory.Exists(generated) || !Directory.EnumerateFileSystemEntries(generated).Any(file =>
+            Directory.Exists(file) || Path.GetFileName(file) != "adaptation-result.json" && !file.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)))
+            Build(path);
+        OpenExistingPreview(path, false);
+    }
+
+    [MenuItem("Endfield Character Tool/打开并播放动画预览")]
+    public static void OpenPreviewSelected() { OpenExistingPreview(ResolvePreviewConfig(), true); }
+
+    static string ResolvePreviewConfig()
+    {
+        foreach (string path in new[] { AssetDatabase.GetAssetPath(Selection.activeObject),
+            UnityEngine.SceneManagement.SceneManager.GetActiveScene().path })
+        {
+            var match = Regex.Match(path ?? "", @"^(Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32})(?:/|$)");
+            if (match.Success && File.Exists(match.Groups[1].Value + "/adaptation.json"))
+                return match.Groups[1].Value + "/adaptation.json";
+        }
+        var candidates = Directory.Exists("Assets/EndfieldCharacterExports")
+            ? Directory.GetFiles("Assets/EndfieldCharacterExports", "adaptation.json", SearchOption.AllDirectories)
+                .Select(path => path.Replace('\\', '/')).Where(path => Regex.IsMatch(path,
+                    "^Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32}/adaptation.json$")).ToArray()
+            : new string[0];
+        if (candidates.Length == 1) return candidates[0];
+        throw new Exception(candidates.Length == 0 ? "此项目还没有适配包，请先在工作台生成 Unity 预览。"
+            : "项目中有多个适配包，请选择需要的包文件夹、配置、Prefab 或预览场景，再打开动画预览。");
+    }
+
+    public static string OpenExistingPreview(string configPath, bool play)
+    {
+        configPath = configPath.Replace('\\', '/');
+        if (!Regex.IsMatch(configPath, "^Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32}/adaptation.json$"))
+            throw new Exception("预览配置必须位于生成的适配包内。");
+        string basePath = Path.GetDirectoryName(configPath).Replace('\\', '/');
+        string generated = basePath + "/Generated", reportPath = generated + "/adaptation-result.json";
+        if (!File.Exists(reportPath)) throw new Exception("本包尚未完成生成，请先在工作台生成 Unity 预览。");
+        var config = JsonUtility.FromJson<Config>(File.ReadAllText(configPath));
+        var report = JsonUtility.FromJson<BuildReport>(File.ReadAllText(reportPath));
+        if (config.schema != "endfield-unity-adaptation-config-v1" || report.schema != "endfield-unity-adaptation-v1"
+            || report.taskId != config.taskId || report.runId != config.runId || report.configSha256 != Hash(configPath)
+            || report.status != "adapted_unverified" || !report.adapted || report.clips == null
+            || report.clips.Length != config.clips.Length || report.clips.Any(item => !item.adapted))
+            throw new Exception("已有生成结果不完整或与本包不符。请查看失败报告，或在工作台建立新包；旧文件已保留。");
+        Guid task;
+        if (!Guid.TryParse(config.taskId, out task) || !Guid.TryParseExact(config.runId, "N", out _)
+            || basePath != "Assets/EndfieldCharacterExports/" + task.ToString("N").Substring(0, 8) + "_" + config.runId)
+            throw new Exception("预览配置与包目录不符。");
+        if (config.inputs == null || report.outputs == null || report.outputs.Length == 0)
+            throw new Exception("已有结果缺少文件清单，无法安全打开。");
+        foreach (var input in config.inputs)
+            if (Hash(Local(basePath, input.path)) != input.sha256) throw new Exception("预览源文件已变化，请保留修改并生成新包。");
+        foreach (var input in config.clips)
+        {
+            var source = AssetDatabase.LoadAssetAtPath<AnimationClip>(Local(basePath, input.source));
+            var analysis = new ClipReport();
+            var row = report.clips.SingleOrDefault(item => item.output == generated + "/Clip_" + input.id + ".anim");
+            if (source && NeedsHumanMotion(source, analysis) && (row == null || !row.humanoid))
+                throw new Exception("此旧包丢弃了主体肌肉通道，会出现 T 字姿势。请用新版工作台重新生成预览，旧包已保留。");
+        }
+        var outputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var output in report.outputs)
+        {
+            if (!outputs.Add(output.path) || !Path.GetFullPath(output.path).StartsWith(Path.GetFullPath(generated) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(output.path) || new FileInfo(output.path).Length != output.bytes || Hash(output.path) != output.sha256)
+                throw new Exception("已有生成文件缺失或已修改，请保留修改并在工作台建立新包。");
+        }
+        if (report.clips.Any(item => item.humanoid) && (report.humanAvatar != generated + "/CharacterHumanAvatar.asset" || !outputs.Contains(report.humanAvatar)))
+            throw new Exception("人形动画缺少配套 Avatar，请保留原包并重新生成。");
+        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1")
+        {
+            var expected = new HashSet<string>(config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs)
+                .Concat(new[] { "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs", "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs" })
+                .Select(path => path + ".meta"), StringComparer.OrdinalIgnoreCase);
+            if (report.metadata == null || report.metadata.Length != expected.Count) throw new Exception("生成结果的元数据清单不完整。");
+            foreach (var file in report.metadata)
+                if (!expected.Remove(file.path) || !File.Exists(file.path) || new FileInfo(file.path).Length != file.bytes || Hash(file.path) != file.sha256)
+                    throw new Exception("资产引用已变化，请先核对结果或生成独立新包。");
+        }
+        string scenePath = generated + "/CharacterPreview.unity";
+        if (!report.previewCreated || report.previewScene != scenePath || !outputs.Contains(scenePath))
+            throw new Exception("本包未生成预览场景。请在工作台勾选生成预览场景后建立新包。");
+        var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+        if (EditorApplication.isPlayingOrWillChangePlaymode)
+        {
+            if (active.path == scenePath) return scenePath;
+            throw new Exception("Unity 当前正在播放其他场景，请先退出 Play 再打开此预览。");
+        }
+        if (active.path != scenePath)
+        {
+            if (Application.isBatchMode && active.isDirty) throw new Exception("当前场景有未保存内容，批处理不切换场景。");
+            if (!Application.isBatchMode && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+                throw new OperationCanceledException("已取消打开预览，当前场景保留。");
+            EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+        }
+        if (play)
+        {
+            var gameView = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameView");
+            if (!Application.isBatchMode && gameView != null) EditorWindow.GetWindow(gameView).Focus();
+            EditorApplication.isPlaying = true;
+        }
+        Debug.Log(play ? "已打开动画预览并请求 Play：" + scenePath : "预览已生成，已打开场景。点击 Unity 顶部 Play 播放：" + scenePath);
+        return scenePath;
+    }
+
+    [Serializable] public class PreviewOpenRequest
+    { public string schema = "endfield-preview-open-v1", requestId, configPath, configSha256; public bool play = true; }
+    [Serializable] public class PreviewOpenReceipt
+    { public string schema = "endfield-preview-open-result-v1", requestId, scene, error, status; public bool playRequested; }
+    static double nextPreviewRequest;
+    [InitializeOnLoadMethod]
+    static void RegisterPreviewRequests()
+    {
+        if (!Application.isBatchMode) { EditorApplication.update -= PollPreviewRequest; EditorApplication.update += PollPreviewRequest; }
+    }
+    static void PollPreviewRequest()
+    {
+        if (EditorApplication.timeSinceStartup < nextPreviewRequest || EditorApplication.isCompiling || EditorApplication.isUpdating) return;
+        nextPreviewRequest = EditorApplication.timeSinceStartup + 1;
+        if (File.Exists("Library/EndfieldCharacterWorkbench/preview-open.json")) OpenRequestedPreview();
+    }
+    // Also usable as -executeMethod after starting a closed project.
+    public static void OpenRequestedPreview()
+    {
+        string requestPath = "Library/EndfieldCharacterWorkbench/preview-open.json";
+        string receiptPath = "Library/EndfieldCharacterWorkbench/preview-open-result.json";
+        if (!File.Exists(requestPath)) return;
+        PreviewOpenRequest request;
+        try { request = JsonUtility.FromJson<PreviewOpenRequest>(File.ReadAllText(requestPath)); }
+        catch (Exception error) { Debug.LogWarning("预览请求暂不可读：" + error.Message); return; }
+        Guid parsed;
+        if (request == null || request.schema != "endfield-preview-open-v1" || !Guid.TryParseExact(request.requestId, "N", out parsed)) return;
+        if (SessionState.GetString("EndfieldPreviewOpen", "") == request.requestId) return;
+        if (File.Exists(receiptPath))
+        {
+            try { if (JsonUtility.FromJson<PreviewOpenReceipt>(File.ReadAllText(receiptPath)).requestId == request.requestId) return; }
+            catch (Exception) { }
+        }
+        SessionState.SetString("EndfieldPreviewOpen", request.requestId);
+        var receipt = new PreviewOpenReceipt { requestId = request.requestId };
+        try
+        {
+            if (string.IsNullOrEmpty(request.configPath) || !Regex.IsMatch(request.configPath,
+                "^Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32}/adaptation.json$") || Hash(request.configPath) != request.configSha256)
+                throw new Exception("打开预览的配置或摘要不符。");
+            receipt.scene = OpenExistingPreview(request.configPath, request.play);
+            receipt.playRequested = request.play; receipt.status = "opened";
+        }
+        catch (Exception error) { receipt.status = error is OperationCanceledException ? "cancelled" : "failed"; receipt.error = error.Message; Debug.LogWarning(receipt.error); }
+        string temporary = receiptPath + "." + request.requestId + ".tmp";
+        File.WriteAllText(temporary, JsonUtility.ToJson(receipt, true));
+        if (File.Exists(receiptPath)) File.Replace(temporary, receiptPath, null); else File.Move(temporary, receiptPath);
     }
 
     public static string MatchPath(string source, IEnumerable<string> paths)
@@ -127,7 +279,7 @@ public static class CharacterAnimationAdapter
         return matches.Length == 1 ? matches[0] : null;
     }
 
-    public static AnimationClip CreateDirectClip(GameObject target, AnimationClip source, Rules rules, ClipReport report)
+    public static AnimationClip CreateDirectClip(GameObject target, AnimationClip source, Rules rules, ClipReport report, bool humanoid = false)
     {
         if (!(rules.positionScale > 0) || !Finite(rules.positionScale)) throw new Exception("动画位置倍率无效。");
         var transforms = target.GetComponentsInChildren<Transform>(true);
@@ -148,12 +300,13 @@ public static class CharacterAnimationAdapter
             foreach (var binding in AnimationUtility.GetCurveBindings(source))
             {
                 report.sourceBindings++;
-                if (binding.type == typeof(Animator)) { report.skippedAnimator++; continue; }
-                if (binding.type != typeof(Transform)) { report.skippedOther++; continue; }
+                bool muscleBinding = binding.type == typeof(Animator);
+                if (muscleBinding && !humanoid) { report.skippedAnimator++; continue; }
+                if (binding.type != typeof(Transform) && !muscleBinding) { report.skippedOther++; continue; }
                 bool position = binding.propertyName.StartsWith("m_LocalPosition.", StringComparison.Ordinal);
                 if (rules.dropSceneTranslation && position && string.IsNullOrEmpty(binding.path))
                 { report.droppedSceneTranslation++; continue; }
-                var mapped = MatchPath(binding.path, paths);
+                var mapped = muscleBinding ? "" : MatchPath(binding.path, paths);
                 if (mapped == null) { missing.Add(binding.path); continue; }
                 // Excluding a head's descendants preserves the head rotation itself.
                 if (exactExclusions.Contains(mapped) || exclusions.Any(prefix => mapped.StartsWith(prefix + "/", StringComparison.Ordinal)))
@@ -194,11 +347,57 @@ public static class CharacterAnimationAdapter
             var settings = AnimationUtility.GetAnimationClipSettings(source);
             settings.loopTime = rules.forceLoop || settings.loopTime;
             AnimationUtility.SetAnimationClipSettings(clip, settings);
-            if (clip.isHumanMotion) throw new Exception("直接骨骼动画仍包含 Humanoid 数据。");
+            if (clip.isHumanMotion != humanoid) throw new Exception("生成动画的播放模式与主体通道不一致。");
             report.retainedBindings = AnimationUtility.GetCurveBindings(clip).Length;
             return clip;
         }
         catch { UnityEngine.Object.DestroyImmediate(clip); throw; }
+    }
+
+    static bool NeedsHumanMotion(AnimationClip source, ClipReport report)
+    {
+        var muscles = new HashSet<string>(HumanTrait.MuscleName, StringComparer.Ordinal);
+        var body = new HashSet<string>(new[] { "Bip001_L_Thigh", "Bip001_R_Thigh", "Bip001_L_Calf", "Bip001_R_Calf",
+            "Bip001_L_UpperArm", "Bip001_R_UpperArm", "Bip001_Spine", "Bip001_Spine1", "Bip001_Spine2" });
+        foreach (var binding in AnimationUtility.GetCurveBindings(source))
+        {
+            var curve = AnimationUtility.GetEditorCurve(source, binding);
+            if (curve == null || curve.length < 2 || curve.keys.Max(key => key.value) - curve.keys.Min(key => key.value) < .00001f) continue;
+            if (binding.type == typeof(Animator) && muscles.Contains(binding.propertyName)) report.movingMuscles++;
+            if (binding.type == typeof(Transform) && body.Contains(binding.path.Split('/').Last())
+                && (binding.propertyName.StartsWith("m_LocalRotation.") || binding.propertyName.Contains("Euler"))) report.movingBodyRotationChannels++;
+        }
+        return report.movingMuscles > 0 && report.movingBodyRotationChannels == 0;
+    }
+
+    [Serializable] class HumanMappingBone { public string m_BoneName = "", m_HumanName = ""; }
+    [Serializable] class HumanMappingCandidate { public string name = "", sourceAsset = "", sourceBundle = "", pathId = ""; public HumanMappingBone[] bones = new HumanMappingBone[0]; }
+    [Serializable] class HumanMappings { public string schema = ""; public HumanMappingCandidate[] candidates = new HumanMappingCandidate[0]; }
+    static Avatar BuildHumanAvatar(GameObject root, string basePath, out string mappingSource)
+    {
+        string file = basePath + "/Model/avatar_human_candidates.json";
+        if (!File.Exists(file)) throw new Exception("此动画需要 Humanoid 主体通道。请使用新版工具重新生成包含真实人形映射的包。");
+        var mappings = JsonUtility.FromJson<HumanMappings>(File.ReadAllText(file));
+        if (mappings.schema != "endfield-human-mapping-candidates-v1" || mappings.candidates == null)
+            throw new Exception("人形映射来源文件无效。");
+        var transforms = root.GetComponentsInChildren<Transform>(true);
+        var names = transforms.GroupBy(item => item.name).ToDictionary(group => group.Key, group => group.Count());
+        var candidates = mappings.candidates.Where(candidate => candidate.bones != null && candidate.bones.Length >= 15
+            && candidate.bones.All(bone => names.ContainsKey(bone.m_BoneName) && names[bone.m_BoneName] == 1)
+            && candidate.bones.Select(bone => bone.m_HumanName).Distinct().Count() == candidate.bones.Length).ToArray();
+        var distinct = candidates.GroupBy(candidate => string.Join("|", candidate.bones.OrderBy(bone => bone.m_HumanName)
+            .Select(bone => bone.m_HumanName + "=" + bone.m_BoneName))).ToArray();
+        if (distinct.Length != 1) throw new Exception("没有唯一且完整匹配模型的源人形映射，不能猜测 Humanoid 骨架。");
+        var selected = distinct[0].First();
+        var human = new HumanDescription {
+            human = selected.bones.Select(bone => new HumanBone { boneName = bone.m_BoneName, humanName = bone.m_HumanName, limit = new HumanLimit { useDefaultValues = true } }).ToArray(),
+            skeleton = transforms.Select(item => new SkeletonBone { name = item.name, position = item.localPosition, rotation = item.localRotation, scale = item.localScale }).ToArray(),
+            hasTranslationDoF = false, armStretch = 0, legStretch = 0, upperArmTwist = 1, lowerArmTwist = 0, upperLegTwist = 1, lowerLegTwist = 0 };
+        var avatar = AvatarBuilder.BuildHumanAvatar(root, human);
+        if (!avatar || !avatar.isValid || !avatar.isHuman) throw new Exception("按源映射建立的人形 Avatar 无效。");
+        avatar.name = "CharacterHumanAvatar";
+        mappingSource = selected.name + " / " + selected.sourceAsset + " / PathID " + selected.pathId;
+        return avatar;
     }
 
     public static void Build(string configPath, string invocationId = "")
@@ -246,6 +445,7 @@ public static class CharacterAnimationAdapter
             root.name = "Character"; root.transform.localPosition = Vector3.zero;
             var avatar = AssetDatabase.LoadAllAssetsAtPath(modelPath).OfType<Avatar>().SingleOrDefault(item => item.isValid && !item.isHuman);
             if (!avatar) throw new Exception("模型没有有效的 Generic Avatar。");
+            Avatar humanAvatar = null;
             report.materials = PrepareMaterials(root, basePath, generated, outputs);
             report.diagnostics = Diagnose(root, report.materials);
             if (!report.diagnostics.geometryPassed) throw new Exception("模型诊断发现非法骨骼、权重、路径或顶点，请查看诊断报告。");
@@ -259,7 +459,16 @@ public static class CharacterAnimationAdapter
                     var source = AssetDatabase.LoadAssetAtPath<AnimationClip>(Local(basePath, input.source));
                     if (!source) throw new Exception("源动画未导入。");
                     if (string.IsNullOrEmpty(input.id) || input.id.Any(character => !Uri.IsHexDigit(character))) throw new Exception("片段标识无效。");
-                    var clip = CreateDirectClip(root, source, config.rules, item); clip.name = input.name;
+                    item.humanoid = NeedsHumanMotion(source, item);
+                    if (item.humanoid && !humanAvatar)
+                    {
+                        string mappingSource;
+                        humanAvatar = BuildHumanAvatar(root, basePath, out mappingSource);
+                        report.humanMappingSource = mappingSource;
+                        report.humanAvatar = generated + "/CharacterHumanAvatar.asset";
+                        AssetDatabase.CreateAsset(humanAvatar, report.humanAvatar); outputs.Add(report.humanAvatar);
+                    }
+                    var clip = CreateDirectClip(root, source, config.rules, item, item.humanoid); clip.name = input.name;
                     item.output = generated + "/Clip_" + input.id + ".anim";
                     AssetDatabase.CreateAsset(clip, item.output); outputs.Add(item.output);
                     string stateName = "Clip_" + input.id;
@@ -272,7 +481,8 @@ public static class CharacterAnimationAdapter
                 catch (Exception error) { item.error = error.Message; }
             }
             var animator = root.GetComponent<Animator>() ?? root.AddComponent<Animator>();
-            animator.avatar = avatar; animator.runtimeAnimatorController = controller; animator.applyRootMotion = false;
+            animator.avatar = details.Count > 0 && details[0].humanoid ? humanAvatar : avatar;
+            animator.runtimeAnimatorController = controller; animator.applyRootMotion = false;
             animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
             string prefabPath = generated + "/Character.prefab";
             PrefabUtility.SaveAsPrefabAsset(root, prefabPath); outputs.Add(prefabPath);
@@ -290,7 +500,7 @@ public static class CharacterAnimationAdapter
             report.status = report.adapted ? "adapted_unverified" : "partial";
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             report.outputs = outputs.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
-            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0")
+            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1")
             {
                 var metadataPaths = config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs).Concat(new[] {
                     "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs",
@@ -443,6 +653,16 @@ public static class CharacterAnimationAdapter
             var controls = new GameObject("Animation Preview Controls").AddComponent<EndfieldCharacterWorkbench.CharacterPreviewControls>();
             controls.animator = character.GetComponent<Animator>(); controls.previewCamera = camera;
             controls.clips = clips.Select(item => AssetDatabase.LoadAssetAtPath<AnimationClip>(item.output)).ToArray();
+            controls.displayNames = clips.Select(item => item.name).ToArray();
+            var genericAvatar = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(character.GetComponent<Animator>().avatar)).OfType<Avatar>().FirstOrDefault(item => item.isValid && !item.isHuman);
+            if (!genericAvatar)
+            {
+                var skin = character.GetComponentsInChildren<SkinnedMeshRenderer>(true).First();
+                string modelAsset = AssetDatabase.GetAssetPath(skin.sharedMesh);
+                genericAvatar = AssetDatabase.LoadAllAssetsAtPath(modelAsset).OfType<Avatar>().FirstOrDefault(item => item.isValid && !item.isHuman);
+            }
+            var humanAvatar = AssetDatabase.LoadAssetAtPath<Avatar>(Path.GetDirectoryName(prefabPath).Replace('\\', '/') + "/CharacterHumanAvatar.asset");
+            controls.clipAvatars = clips.Select(item => item.humanoid ? humanAvatar : genericAvatar).ToArray();
             controls.statePaths = clips.Select(item => item.state).ToArray(); controls.cameraPivot = bounds.center; controls.cameraDistance = distance;
             controls.cameraRadius = radius;
             // Save the imported rest pose. Runtime controls initialize animation only after Play begins.

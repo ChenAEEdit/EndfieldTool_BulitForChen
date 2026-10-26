@@ -10,6 +10,8 @@ public sealed class CharacterPreviewControls : MonoBehaviour
     public Camera previewCamera;
     public AnimationClip[] clips = new AnimationClip[0];
     public string[] statePaths = new string[0];
+    public string[] displayNames = new string[0];
+    public Avatar[] clipAvatars = new Avatar[0];
     public Vector3 cameraPivot;
     public float cameraDistance = 3;
     public float cameraRadius = 1;
@@ -29,10 +31,19 @@ public sealed class CharacterPreviewControls : MonoBehaviour
         if (!animator || !animator.runtimeAnimatorController || clips.Length == 0 || clips.Length != statePaths.Length)
         { error = "预览配置不完整，请重新生成独立适配包。"; return; }
         for (int i = 0; i < clips.Length; i++)
+        {
             if (!clips[i] || string.IsNullOrEmpty(statePaths[i]) || !animator.HasState(0, Animator.StringToHash(statePaths[i])))
             { error = "找不到动画或播放状态，请检查生成报告。"; return; }
+            var expected = clipAvatars != null && i < clipAvatars.Length && clipAvatars[i] ? clipAvatars[i] : animator.avatar;
+            if (!expected || !expected.isValid || clips[i].isHumanMotion && !expected.isHuman)
+            { error = "动画缺少有效的配套 Avatar，请用新版工具重新生成预览。"; return; }
+        }
         ready = true;
-        Select(Mathf.Clamp(selected, 0, clips.Length - 1));
+        int initial = Mathf.Clamp(selected, 0, clips.Length - 1);
+        // A transition/end clip naturally stops. Prefer the available looping action on first open.
+        if (initial == 0 && !clips[0].isLooping)
+            for (int i = 1; i < clips.Length; i++) if (clips[i].isLooping) { initial = i; break; }
+        Select(initial);
         UpdateCamera();
     }
 
@@ -66,6 +77,7 @@ public sealed class CharacterPreviewControls : MonoBehaviour
     {
         if (!ready) return;
         selected = (index + clips.Length) % clips.Length;
+        if (clipAvatars != null && selected < clipAvatars.Length && clipAvatars[selected]) animator.avatar = clipAvatars[selected];
         // Reset missing channels when switching clips with different binding sets.
         animator.Rebind();
         animator.Play(Animator.StringToHash(statePaths[selected]), 0, 0);
@@ -74,6 +86,7 @@ public sealed class CharacterPreviewControls : MonoBehaviour
     }
 
     public void SelectClip(int index) { Select(index); }
+    public string DisplayName(int index) { return displayNames != null && index >= 0 && index < displayNames.Length && !string.IsNullOrEmpty(displayNames[index]) ? displayNames[index] : clips[index].name; }
     public void Restart() { Select(selected); }
     public void SeekNormalized(float value) { Seek(value); }
     public void SetPaused(bool value) { paused = value; if (ready && animator) animator.speed = paused ? 0 : speed; }
@@ -116,7 +129,7 @@ public sealed class CharacterPreviewControls : MonoBehaviour
             GUILayout.Label("基础材质预览 · 播放效果尚未验证");
             if (!string.IsNullOrEmpty(error)) { GUILayout.Label(error); GUILayout.EndScrollView(); GUILayout.EndArea(); return; }
             if (!ready) { GUILayout.Label("正在准备播放…"); GUILayout.EndScrollView(); GUILayout.EndArea(); return; }
-            GUILayout.Label((selected + 1) + " / " + clips.Length + "   " + clips[selected].name);
+            GUILayout.Label((selected + 1) + " / " + clips.Length + "   " + DisplayName(selected));
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("上一个")) Select(selected - 1);
             if (GUILayout.Button(paused ? "继续" : "暂停")) SetPaused(!paused);
@@ -145,7 +158,7 @@ public sealed class CharacterPreviewControls : MonoBehaviour
             GUILayout.Label("动画列表");
             listScroll = GUILayout.BeginScrollView(listScroll, GUILayout.Height(Mathf.Clamp(Screen.height / scale - 480, 65, 185)));
             for (int i = 0; i < clips.Length; i++)
-                if (GUILayout.Button((i == selected ? "▶ " : "") + clips[i].name)) Select(i);
+                if (GUILayout.Button((i == selected ? "▶ " : "") + DisplayName(i))) Select(i);
             GUILayout.EndScrollView();
             GUILayout.Label("视角");
             GUILayout.BeginHorizontal();

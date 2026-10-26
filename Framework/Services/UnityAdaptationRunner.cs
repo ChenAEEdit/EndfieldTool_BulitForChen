@@ -265,8 +265,8 @@ public sealed class UnityAdaptationRunner
             || files.Keys.Any(key => key != EditorRelative && key != RuntimeRelative && key != "使用说明.md" && !key.StartsWith(assetRoot + "/", StringComparison.Ordinal)))
             throw new InvalidDataException("适配包包含未声明的内容或缺少模型／动画。");
         // Older packages lack the batch entry. Ask for a fresh package rather than altering its manifest.
-        if (config.AdapterVersion is not ("0.8.0" or "0.9.0" or "0.10.0")) throw new InvalidDataException("适配包版本不受支持，请重新生成。");
-        if (config.AdapterVersion is ("0.9.0" or "0.10.0") && !files.ContainsKey(RuntimeRelative))
+        if (config.AdapterVersion is not ("0.8.0" or "0.9.0" or "0.10.0" or "0.11.1")) throw new InvalidDataException("适配包版本不受支持，请重新生成。");
+        if (config.AdapterVersion is ("0.9.0" or "0.10.0" or "0.11.1") && !files.ContainsKey(RuntimeRelative))
             throw new InvalidDataException("适配包缺少预览播放脚本，请重新生成完整包。");
         return files;
     }
@@ -317,7 +317,7 @@ public sealed class UnityAdaptationRunner
         }
     }
 
-    private static string? InstallScript(ObjectOutputFile source, string relative, string markerName,
+    internal static string? InstallScript(ObjectOutputFile source, string relative, string markerName,
         string project, string work, string runRoot, CancellationToken token)
     {
         string destination = UnityProjectFiles.Within(project, relative);

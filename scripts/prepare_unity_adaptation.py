@@ -54,7 +54,7 @@ def prepare_unity_package(state, selection, model, clips):
         copy(exported["output"], relative)
         definitions.append({"id": row["key"], "name": row["name"], "source": relative})
     config = {"schema": "endfield-unity-adaptation-config-v1", "taskId": state["result"]["taskId"],
-        "runId": state["result"]["runId"], "adapterVersion": "0.10.0", "modelKey": model["key"],
+        "runId": state["result"]["runId"], "adapterVersion": "0.11.1", "modelKey": model["key"],
         "model": "Model/" + Path(model_report["fbx"]).relative_to(run / "exports/model").as_posix(),
         "modelImportScale": rules["modelImportScale"],
         "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes")},
@@ -77,13 +77,13 @@ def prepare_unity_package(state, selection, model, clips):
         "4. 在同目录 Generated 下查看独立动画、控制器、Character.prefab 和 adaptation-result.json。\n"
         "5. 回到工作台点击读取 Unity 适配结果。若勾选了生成预览场景，在 Generated 下打开 CharacterPreview.unity，"
         "进入 Play 后可切换、暂停、重播、调速和逐帧查看。也可将 Prefab 放入自己的场景。\n\n"
-        "单位倍率、排除规则来自本次明确设置。默认只绑定 Transform 轨道并使用 Generic，"
-        "不混入 Animator 肌肉通道；这不等于所有共享或附加动作都能正确单独播放。\n\n"
+        "单位倍率、排除规则来自本次明确设置。根据主体 Transform 曲线和实际动态肌肉通道选择 Generic 或 Humanoid；"
+        "人形模式要求唯一匹配模型的源人形映射。生成完成后使用工作台“打开并播放预览”，无需再次生成。\n\n"
         "源动画保留，生成结果尚未验证播放。若有未匹配轨道，默认停止并记录；"
         "要忽略轨道请在工具中明确勾选并生成新的包。已生成的文件不会自动覆盖。\n",
         encoding="utf-8")
     state["result"].update(status="unity_prepared", unityPackageDirectory=str(package), unityAssetRoot=asset_root,
         unityConfigSha256=digest(target / "adaptation.json"), expectedAdaptedClips=len(definitions),
         message="Unity 适配包已准备；请在 Unity 中执行生成，再读取适配结果。尚未适配或验证播放。")
-    state["result"]["warnings"].append("Generic 直接骨骼模式未重建游戏 IK、膝部修正求解器或布料物理；需要实际播放检查。")
+    state["result"]["warnings"].append("预览按主体曲线选择播放模式；未重建游戏 IK、膝部修正求解器或布料物理，需要实际播放检查。")
     return package
