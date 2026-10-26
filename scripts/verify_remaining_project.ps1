@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)] [string] $Project,
     [Parameter(Mandatory)] [string] $ReportDirectory,
     [Parameter(Mandatory)] [string[]] $Configs,
-    [ValidateSet('mapping', 'knee')] [string] $Mode = 'mapping',
+    [ValidateSet('mapping', 'knee', 'rig')] [string] $Mode = 'mapping',
     [string] $Editor = 'D:\Unity 3D\Editor\6000.0.84f1\Editor\Unity.exe'
 )
 $ErrorActionPreference = 'Stop'
@@ -14,7 +14,7 @@ $reports = [IO.Path]::GetFullPath($ReportDirectory)
 New-Item -ItemType Directory -Path $reports -Force | Out-Null
 $validation = Join-Path $projectRoot 'Assets/EndfieldCharacterValidation/Editor'
 New-Item -ItemType Directory -Path $validation -Force | Out-Null
-$name = if ($Mode -eq 'knee') { 'UnityGeneratedKneeVerification' } else { 'UnityMappingVerification' }
+$name = switch ($Mode) { 'knee' { 'UnityGeneratedKneeVerification' } 'rig' { 'UnitySharedRigVerification' } default { 'UnityMappingVerification' } }
 Copy-Item -LiteralPath (Join-Path $repoRoot "sources/verification/$name.cs") -Destination $validation -Force
 if ($Mode -eq 'knee') { Copy-Item -LiteralPath (Join-Path $repoRoot 'templates/workspace/KneeDiagnostics.cs') -Destination $validation -Force }
 $request = Join-Path $reports 'request.json'
@@ -24,8 +24,8 @@ $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
 foreach ($argument in @('-batchmode', '-projectPath', $projectRoot, '-executeMethod', "EndfieldCharacterWorkbench.Verification.$name.Run", '-logFile', (Join-Path $reports 'unity.log'))) { $start.ArgumentList.Add($argument) }
-$variable = if ($Mode -eq 'knee') { 'ENDFIELD_GENERATED_KNEE_CHECK' } else { 'ENDFIELD_MAPPING_CHECK' }
-$resultName = if ($Mode -eq 'knee') { 'knee-verification.json' } else { 'mapping-capability-verification.json' }
+$variable = switch ($Mode) { 'knee' { 'ENDFIELD_GENERATED_KNEE_CHECK' } 'rig' { 'ENDFIELD_SHARED_RIG_CHECK' } default { 'ENDFIELD_MAPPING_CHECK' } }
+$resultName = switch ($Mode) { 'knee' { 'knee-verification.json' } 'rig' { 'shared-rig-verification.json' } default { 'mapping-capability-verification.json' } }
 $start.Environment[$variable] = $request
 $owned = [Diagnostics.Process]::Start($start)
 try {

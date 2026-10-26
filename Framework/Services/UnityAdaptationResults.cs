@@ -82,8 +82,10 @@ public static class UnityAdaptationResults
             foreach (var clip in report.Clips)
             {
                 if (clip.TrackAuditVersion != 1 || !config.Clips.Any(input => input.Id == clip.Id && input.Name == clip.Name)
-                    || clip.Tracks.Count < clip.SourceBindings || clip.Tracks.Count(row => row.Decision == "retain") != clip.RetainedBindings
-                    || clip.Tracks.Any(row => !uint.TryParse(row.SourceHash, out _) || string.IsNullOrEmpty(row.Property) || string.IsNullOrEmpty(row.Component)
+                    || clip.SourceBindings < 0 || clip.SourceObjectBindings < 0 || clip.Tracks.Count != clip.SourceBindings + clip.SourceObjectBindings
+                    || clip.Tracks.Count(row => row.Decision == "retain") != clip.RetainedBindings
+                    || clip.Tracks.Any(row => !uint.TryParse(row.SourceHash, out _) || row.SourceHash != TrackHash(row.SourcePath) || string.IsNullOrEmpty(row.Property) || string.IsNullOrEmpty(row.Component)
+                        || row.Keys <= 0 || row.Decision == "retain" && row.OutputKeys <= 0
                         || row.Decision is not ("retain" or "omit") || row.Reason.Length == 0)
                     || clip.Tracks.Select(row => (row.SourcePath, row.Property, row.Component)).Distinct().Count() != clip.Tracks.Count)
                     throw new InvalidDataException("逐轨道审计不完整、重复或与当前动画不符，不能标记为已核对。");
@@ -161,6 +163,15 @@ public static class UnityAdaptationResults
     private static Task<string> HashAsync(string path, CancellationToken token) =>
         Task.Run(() => UnityProjectFiles.Hash(path, token), token);
 
+    private static string TrackHash(string path)
+    {
+        if (path.StartsWith("path_", StringComparison.Ordinal) && uint.TryParse(path[5..], out var unresolved)) return unresolved.ToString();
+        uint hash = 0xffffffff;
+        foreach (byte value in System.Text.Encoding.UTF8.GetBytes(path))
+        { hash ^= value; for (int i = 0; i < 8; i++) hash = (hash >> 1) ^ ((hash & 1) != 0 ? 0xedb88320u : 0); }
+        return (hash ^ 0xffffffff).ToString();
+    }
+
     private sealed record NativeConfig
     {
         public string Schema { get; init; } = "";
@@ -198,6 +209,7 @@ public static class UnityAdaptationResults
         public string Id { get; init; } = "";
         public int TrackAuditVersion { get; init; }
         public int SourceBindings { get; init; }
+        public int SourceObjectBindings { get; init; }
         public int RetainedBindings { get; init; }
         public List<NativeTrack> Tracks { get; init; } = [];
         public bool Adapted { get; init; }
@@ -208,6 +220,8 @@ public static class UnityAdaptationResults
     }
     private sealed record NativeTrack
     {
+        public int Keys { get; init; }
+        public int OutputKeys { get; init; }
         public string SourceHash { get; init; } = "";
         public string SourcePath { get; init; } = "";
         public string Property { get; init; } = "";

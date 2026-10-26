@@ -23,7 +23,7 @@ foreach (var item in all)
     string key = Key(item);
     int renderers = 0, bones = 0, nodes = 0;
     bool candidate = false;
-    string? linkedAvatar = null, tos = null, rig = null;
+    string? linkedAvatar = null, tos = null, rig = null, rigError = null;
     if (item is GameObject gameObject)
     {
         bool root = gameObject.m_Transform != null && !gameObject.m_Transform.m_Father.TryGet(out _);
@@ -52,7 +52,8 @@ foreach (var item in all)
         if (candidate)
         {
             rig = Path.Combine(output, "rig-" + key + ".json");
-            RigEvidenceWriter.Write(gameObject, key, linkedAvatar, rig, Key);
+            try { RigEvidenceWriter.Write(gameObject, key, linkedAvatar, rig, Key); }
+            catch (InvalidDataException error) { rig = null; rigError = error.Message; }
         }
     }
     if (item is Avatar sourceAvatar)
@@ -64,7 +65,7 @@ foreach (var item in all)
     rows.Add(new { key, kind, name = item.Name ?? "", pathId = item.m_PathID.ToString(),
         sourceAsset = item.assetsFile.fileName, sourceBundle = item.assetsFile.originalPath,
         isModelCandidate = candidate, rendererCount = renderers, boneReferenceCount = bones,
-        hierarchyNodes = nodes, linkedAvatarKey = linkedAvatar, avatarTosPath = tos, rigEvidencePath = rig,
+        hierarchyNodes = nodes, linkedAvatarKey = linkedAvatar, avatarTosPath = tos, rigEvidencePath = rig, rigEvidenceError = rigError,
         bindingPathHashes = item is AnimationClip sourceClip ? sourceClip.m_ClipBindingConstant?.genericBindings?
             .Where(binding => binding.typeID == ClassIDType.Transform).Select(binding => binding.path).Distinct().Order().ToArray() ?? [] : Array.Empty<uint>() });
 }

@@ -33,6 +33,8 @@ internal static class RigEvidenceWriter
                 if (pointer.TryGet(out var child) && child.m_GameObject.TryGet(out var go)) Visit(child, path.Length == 0 ? go.m_Name : path + "/" + go.m_Name, path, world);
         }
         if (root.m_Transform != null) Visit(root.m_Transform, "", null, NMatrix.Identity);
+        var duplicate = nodes.Values.GroupBy(n => n.Path, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate != null) throw new InvalidDataException("duplicate-hierarchy-path:" + duplicate.Key);
         var candidates = new Dictionary<string, List<NMatrix>>();
         var rawSkinBinds = new List<object>();
         var warnings = new List<string>();

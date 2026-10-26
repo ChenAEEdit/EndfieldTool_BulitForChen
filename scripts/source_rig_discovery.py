@@ -1,5 +1,4 @@
 """Bounded source-rig discovery from the same verified game manifest as the task."""
-import hashlib
 from pathlib import Path
 import re
 import zlib
@@ -75,7 +74,7 @@ def add_source_rig_inputs(plan, bundle_result, inventory, run, inputs, copied, r
         name = row['name'].replace('\\', '/').rsplit('/', 1)[-1]
         require(re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,160}\.ab', name) and '..' not in name, '源骨架包文件名无效。')
         if name.casefold() in copied:
-            require(copied[name.casefold()]['md5'] == row['data_md5'], '源骨架候选与当前快照存在同名不同内容的包。')
+            require(copied[name.casefold()]['md5'].upper() == row['data_md5'].upper(), '源骨架候选与当前快照存在同名不同内容的包。')
             continue
         target = inputs / name
         emit('补充源骨架证据：' + name, 36)

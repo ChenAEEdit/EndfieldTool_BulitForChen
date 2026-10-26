@@ -37,7 +37,7 @@ public static class CharacterAnimationAdapter
     {
         public string id, name, output, error, state;
         public int trackAuditVersion = 1;
-        public int sourceBindings, retainedBindings, skippedAnimator, skippedOther, droppedSceneTranslation,
+        public int sourceBindings, sourceObjectBindings, retainedBindings, skippedAnimator, skippedOther, droppedSceneTranslation,
             remappedBindings, excludedBindings, repairedTangents;
         public bool adapted, humanoid;
         public int movingMuscles, movingBodyRotationChannels;
@@ -48,6 +48,8 @@ public static class CharacterAnimationAdapter
         public float rotationSampleRate;
         public List<string> sourceRestMissing = new List<string>();
         public List<string> worldBodyPaths = new List<string>();
+        public List<string> serializedReferencePaths = new List<string>();
+        public List<BodyAxisCheck> bodyAxisChecks = new List<BodyAxisCheck>();
     }
     [Serializable] public class TrackAudit
     {
@@ -56,7 +58,8 @@ public static class CharacterAnimationAdapter
         public int keys, outputKeys;
     }
     [Serializable] public class RigNode { public string path, parent, reference; public Vector3 position, scale, serializedPosition, serializedScale; public Quaternion rotation, serializedRotation; }
-    [Serializable] public class RigEvidence { public string schema, key, name, restPoseKind; public RigNode[] nodes; public string[] bodyBoneNames = new string[0]; }
+    [Serializable] public class BodyAxisCheck { public string path, childPath; public float degrees; }
+    [Serializable] public class RigEvidence { public string schema, key, name, restPoseKind; public RigNode[] nodes; public string[] bodyBoneNames = new string[0], bodyAxisChildNames = new string[0]; }
     [Serializable] class PathEvidenceRow { public string hash = "", path = "", status = ""; }
     [Serializable] class PathEvidenceFile { public string schema = ""; public PathEvidenceRow[] paths = new PathEvidenceRow[0]; }
     static void CompleteTrackEvidence(ClipReport report, PathEvidenceFile evidence)
@@ -335,6 +338,7 @@ public static class CharacterAnimationAdapter
     {
         var sourceBindings = AnimationUtility.GetCurveBindings(source);
         report.sourceBindings = sourceBindings.Length;
+        report.sourceObjectBindings = AnimationUtility.GetObjectReferenceCurveBindings(source).Length;
         report.tracks = sourceBindings.Select(binding => new TrackAudit { sourcePath = binding.path, property = binding.propertyName,
             component = binding.type.FullName, keys = AnimationUtility.GetEditorCurve(source, binding)?.length ?? 0 }).ToList();
         foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(source))
@@ -415,7 +419,9 @@ public static class CharacterAnimationAdapter
                 }
                 bindings.Add(remapped); curves.Add(curve);
                 audit.decision = "retain"; audit.reason = mapped == binding.path ? "exact-path" : "unique-suffix-path";
-                audit.outputKeys = curve.length; audit.conversion = convertedSource ? report.worldBodyPaths.Contains(binding.path) ? "body-world-orientation" : "source-bind-relative" : "direct";
+                audit.outputKeys = curve.length; audit.conversion = !convertedSource ? "direct"
+                    : report.worldBodyPaths.Contains(binding.path) && binding.propertyName.StartsWith("m_LocalRotation.") ? "body-world-orientation"
+                    : report.serializedReferencePaths.Contains(binding.path) ? "serialized-body-reference-relative" : "source-bind-relative";
             }
             report.unmatched = missing.OrderBy(path => path, StringComparer.Ordinal).ToArray();
             if (missing.Count > 0 && !rules.dropUnmatched) throw new Exception("存在未匹配或不唯一的路径；请核对报告，或明确选择忽略未匹配轨道。");
@@ -441,6 +447,12 @@ public static class CharacterAnimationAdapter
             throw new Exception("动作原骨架缺少真实绑定矩阵及姿态来源，请重新解析对象。");
         var nodes = rig.nodes.ToDictionary(node => node.path, StringComparer.Ordinal);
         var targets = target.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, target.transform));
+        // The unweighted motion carrier above Hips has no skin bind matrix.
+        // Its explicitly recorded serialized reference defines motion deltas;
+        // this is not claimed to be a recovered skin bind pose.
+        var bodyNodes = rig.nodes.Where(n => rig.bodyBoneNames.Contains(n.path.Split('/').Last())).ToArray();
+        var bodyPaths = new HashSet<string>(bodyNodes.Select(n => n.path));
+        var carrierPaths = new HashSet<string>(bodyNodes.Where(n => n.parent != null && !bodyPaths.Contains(n.parent)).Select(n => n.parent));
         var converted = UnityEngine.Object.Instantiate(source);
         try
         {
@@ -450,16 +462,25 @@ public static class CharacterAnimationAdapter
                 string mapped = MatchPath(group.Key, targets.Keys);
                 RigNode node;
                 if (mapped == null) continue;
-                if (!nodes.TryGetValue(group.Key, out node)
-                    || node.reference != "skin-bind-pose" && node.reference != "rig-root-reference")
+                if (!nodes.TryGetValue(group.Key, out node))
                 { report.sourceRestMissing.Add(group.Key); continue; }
+                if (node.reference == "ambiguous-skin-bind-pose" && (bodyPaths.Contains(group.Key) || carrierPaths.Contains(group.Key)))
+                    throw new Exception("主体骨骼的绑定姿态存在歧义，不能省略后继续：" + group.Key);
+                bool serializedBodyReference = node.reference != "skin-bind-pose" && node.reference != "rig-root-reference"
+                    && (bodyPaths.Contains(group.Key) || carrierPaths.Contains(group.Key)) && node.reference != "ambiguous-skin-bind-pose";
+                if (!serializedBodyReference && node.reference != "skin-bind-pose" && node.reference != "rig-root-reference")
+                { report.sourceRestMissing.Add(group.Key); continue; }
+                var referencePosition = serializedBodyReference ? node.serializedPosition : node.position;
+                var referenceRotation = serializedBodyReference ? node.serializedRotation : node.rotation;
+                var referenceScale = serializedBodyReference ? node.serializedScale : node.scale;
+                if (serializedBodyReference) report.serializedReferencePaths.Add(group.Key);
                 var destination = targets[mapped];
                 string targetParent = destination == target.transform ? null : AnimationUtility.CalculateTransformPath(destination.parent, target.transform);
                 bool prefixedRoot = node.parent == "" && group.Key.Length > 0 && !group.Key.Contains("/") && mapped.EndsWith("/" + group.Key, StringComparison.Ordinal);
                 bool virtualRoot = group.Key.Length == 0 && mapped.Length == 0;
                 if (!virtualRoot && node.parent != null && !prefixedRoot && MatchPath(node.parent, targets.Keys) != targetParent) throw new Exception("源骨架与目标的父子关系不一致，不能按本地姿态换算：" + group.Key);
-                if (!Finite(node.position.x) || !Finite(node.position.y) || !Finite(node.position.z) || !Finite(node.scale.x) || !Finite(node.scale.y) || !Finite(node.scale.z)
-                    || !Finite(node.rotation.x) || !Finite(node.rotation.y) || !Finite(node.rotation.z) || !Finite(node.rotation.w) || Quaternion.Dot(node.rotation, node.rotation) < .000001f)
+                if (!Finite(referencePosition.x) || !Finite(referencePosition.y) || !Finite(referencePosition.z) || !Finite(referenceScale.x) || !Finite(referenceScale.y) || !Finite(referenceScale.z)
+                    || !Finite(referenceRotation.x) || !Finite(referenceRotation.y) || !Finite(referenceRotation.z) || !Finite(referenceRotation.w) || Quaternion.Dot(referenceRotation, referenceRotation) < .000001f)
                     throw new Exception("源骨架静态姿态包含非法数值：" + group.Key);
                 foreach (var binding in group.Where(b => b.propertyName.StartsWith("m_LocalPosition.") || b.propertyName.StartsWith("m_LocalScale.")))
                 {
@@ -467,12 +488,12 @@ public static class CharacterAnimationAdapter
                     int axis = "xyz".IndexOf(binding.propertyName.Last());
                     if (axis < 0 || input == null) throw new Exception("源位置或缩放曲线无效。");
                     bool position = binding.propertyName.StartsWith("m_LocalPosition.");
-                    float offset = position ? destination.localPosition[axis] - node.position[axis] : 0;
+                    float offset = position ? destination.localPosition[axis] - referencePosition[axis] : 0;
                     float ratio = 1;
                     if (!position)
                     {
-                        if (Math.Abs(node.scale[axis]) < .000001f) throw new Exception("源静态缩放为零，无法可靠换算：" + group.Key);
-                        ratio = destination.localScale[axis] / node.scale[axis];
+                        if (Math.Abs(referenceScale[axis]) < .000001f) throw new Exception("源静态缩放为零，无法可靠换算：" + group.Key);
+                        ratio = destination.localScale[axis] / referenceScale[axis];
                     }
                     var keys = input.keys;
                     for (int i = 0; i < keys.Length; i++) { keys[i].value = keys[i].value * ratio + offset; keys[i].inTangent *= ratio; keys[i].outTangent *= ratio; }
@@ -480,7 +501,7 @@ public static class CharacterAnimationAdapter
                     if (position) report.retargetedPositionTracks++; else report.retargetedScaleTracks++;
                 }
                 var rotations = group.Where(b => b.propertyName.StartsWith("m_LocalRotation.")).OrderBy(b => "xyzw".IndexOf(b.propertyName.Last())).ToArray();
-                var offsetRotation = destination.localRotation * Quaternion.Inverse(node.rotation.normalized);
+                var offsetRotation = destination.localRotation * Quaternion.Inverse(referenceRotation.normalized);
                 if (group.Any(b => b.propertyName.Contains("Euler")) && Quaternion.Angle(offsetRotation, Quaternion.identity) > .001f)
                     throw new Exception("此源骨架姿态换算不支持欧拉旋转轨道，请保留源文件并检查：" + group.Key);
                 if (rotations.Length == 0 || Quaternion.Angle(offsetRotation, Quaternion.identity) < .001f) continue;
@@ -554,11 +575,15 @@ public static class CharacterAnimationAdapter
                 // Check semantic body children, excluding character-specific facial
                 // and corrective nodes whose positions do not establish a body axis.
                 var children = sourceTransforms.Where(p => p.Value.parent == sourceNodes[0].Value
-                        && rig.bodyBoneNames.Contains(p.Value.name) && p.Value.localPosition.sqrMagnitude > .00000001f)
+                        && rig.bodyAxisChildNames.Contains(p.Value.name) && p.Value.localPosition.sqrMagnitude > .00000001f)
                     .Select(p => new { source = p.Value, targetPath = MatchPath(p.Key, targets.Keys) }).Where(p => p.targetPath != null)
                     .OrderByDescending(p => p.source.localPosition.sqrMagnitude).ToArray();
-                if (children.Any(p => Vector3.Angle(p.source.localPosition, targets[p.targetPath].localPosition) > 5))
-                    throw new Exception("对应骨骼的本地骨轴不同，需要显式坐标映射：" + path);
+                foreach (var child in children)
+                {
+                    float angle = Vector3.Angle(child.source.localPosition, targets[child.targetPath].localPosition);
+                    report.bodyAxisChecks.Add(new BodyAxisCheck { path = path, childPath = AnimationUtility.CalculateTransformPath(child.source, virtualSource.transform), degrees = angle });
+                    if (angle > 5) throw new Exception("对应主链的本地骨轴不同，需要显式坐标映射：" + path + " → " + child.source.name + " / " + angle.ToString("F3") + "°");
+                }
                 body.Add((path, sourceNodes[0].Value, targets[mapped], bindings));
             }
             body = body.OrderBy(p => p.path.Count(c => c == '/')).ToList();
@@ -747,6 +772,11 @@ public static class CharacterAnimationAdapter
                         var mapping = SelectHumanMapping(root, basePath);
                         sourceRig.bodyBoneNames = mapping.bones.Where(b => b.m_HumanName != "LeftEye" && b.m_HumanName != "RightEye" && b.m_HumanName != "Jaw")
                             .Select(b => b.m_BoneName).ToArray();
+                        // Shoulder and thigh attachment offsets depend on chest/pelvis
+                        // proportions; they are not longitudinal bone-axis evidence.
+                        sourceRig.bodyAxisChildNames = mapping.bones.Where(b => sourceRig.bodyBoneNames.Contains(b.m_BoneName)
+                            && b.m_HumanName != "LeftShoulder" && b.m_HumanName != "RightShoulder"
+                            && b.m_HumanName != "LeftUpperLeg" && b.m_HumanName != "RightUpperLeg").Select(b => b.m_BoneName).ToArray();
                     }
                     if (item.humanoid && !humanAvatar)
                     {

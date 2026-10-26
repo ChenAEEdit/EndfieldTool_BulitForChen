@@ -22,7 +22,7 @@ var progress = new InlineProgress<ExtractionProgress>(p => {
 string statePath = Path.Combine(reports, "target-state.json");
 try
 {
-    if (args[3] is "rig-prepare" or "rig-reprepare" or "rig-reinspect")
+    if (args[3] is "rig-prepare" or "rig-reprepare" or "rig-reinspect" or "rig-strict")
     {
         string baseline = Path.Combine(Path.GetDirectoryName(reports)!, "remaining_acceptance_20261026");
         var state = JsonFiles.Read<TargetState>(Path.Combine(baseline, "target-state.json"));
@@ -32,7 +32,7 @@ try
             : new WorkspaceStore().Save(prior.Plan with { Id = Guid.NewGuid(), Options = prior.Plan.Options with { WorkspaceDirectory = Path.Combine(reports, "workspace"), UnityProject = state.ProjectB } });
         File.WriteAllText(Path.Combine(reports, "rig-prepare-plan.txt"), saved.FilePath);
         ObjectOperationResult inspected;
-        if (args[3] == "rig-reprepare") inspected = ObjectWorkflow.ReadResult(saved)!;
+        if (args[3] is "rig-reprepare" or "rig-strict") inspected = ObjectWorkflow.ReadResult(saved)!;
         else if (args[3] == "rig-reinspect") inspected = await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
         else
         {
@@ -49,7 +49,20 @@ try
         var sourceRig = inventory.Objects.Single(o => o.IsModelCandidate && o.Name == "SK_actor_female" && Path.GetFileName(o.SourceBundle) == "7cde33b2f3a520fa070d2454.ab");
         var clip = inventory.Objects.Single(o => o.Kind == "AnimationClip" && o.Name == "female_walk" && Path.GetFileName(o.SourceBundle) == "883c322914dd6cf6f62424d8.ab");
         var prepared = await new ObjectWorkflow().ExecuteAsync(saved, "prepare", inspected.InventoryPath, new ObjectExportSelection(target.Key, target.LinkedAvatarKey, [clip.Key],
-            new AnimationPreparationOptions { ModelImportScale = 100, SourceRigKey = sourceRig.Key, DropUnmatched = true }), progress, deadline.Token);
+            new AnimationPreparationOptions { ModelImportScale = 100, SourceRigKey = sourceRig.Key, DropUnmatched = args[3] != "rig-strict" }), progress, deadline.Token);
+        if (args[3] == "rig-strict")
+        {
+            try { await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token); throw new Exception("Strict mode silently accepted lost tracks"); }
+            catch (InvalidDataException error)
+            {
+                var config = Path.Combine(UnityTaskTarget.Resolve(saved).Plan.Options.UnityProject, prepared.UnityAssetRoot!, "Generated", "adaptation-result.json");
+                var native = JsonNode.Parse(File.ReadAllText(config))!;
+                var detail = native["clips"]![0]!;
+                Require(!detail["adapted"]!.GetValue<bool>() && detail["tracks"]!.AsArray().Any(t => t!["decision"]!.GetValue<string>() == "reject"), "Strict mode rejects missing tracks and preserves full audit");
+                JsonFiles.Write(Path.Combine(reports, "strict-rejection.json"), new { passed = true, prepared.UnityAssetRoot, error.Message, total = detail["tracks"]!.AsArray().Count, rejected = detail["tracks"]!.AsArray().Count(t => t!["decision"]!.GetValue<string>() == "reject") });
+            }
+            return 0;
+        }
         var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
         JsonFiles.Write(Path.Combine(reports, "rig-prepare-generation.json"), new { passed = generated.Result.Adapted, target, sourceRig, clip, prepared, generated, saved.FilePath });
     }
@@ -60,6 +73,50 @@ try
         var prepared = ObjectWorkflow.ReadPreparation(saved)!;
         var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
         JsonFiles.Write(Path.Combine(reports, "rig-prepare-generation.json"), new { passed = generated.Result.Adapted, prepared, generated, saved.FilePath });
+    }
+    else if (args[3] == "audit-guards")
+    {
+        string path = File.ReadAllText(Path.Combine(reports, "rig-prepare-plan.txt")).Trim();
+        var saved = new SavedPlan(path, JsonFiles.Read<ExtractionPlan>(path));
+        var prepared = ObjectWorkflow.ReadPreparation(saved)!;
+        var resolved = UnityTaskTarget.Resolve(saved);
+        string root = Path.Combine(resolved.Plan.Options.UnityProject, prepared.UnityAssetRoot!);
+        string nativePath = Path.Combine(root, "Generated", "adaptation-result.json");
+        byte[] bytes = File.ReadAllBytes(nativePath);
+        var checks = new List<object>();
+        foreach (string mutation in new[] { "missing-row", "duplicate-row", "wrong-hash", "wrong-clip-id", "empty-audit" })
+        {
+            var report = JsonNode.Parse(bytes)!;
+            var clip = report["clips"]![0]!;
+            var tracks = clip["tracks"]!.AsArray();
+            switch (mutation)
+            {
+                case "missing-row": tracks.RemoveAt(0); break;
+                case "duplicate-row": tracks[1] = tracks[0]!.DeepClone(); break;
+                case "wrong-hash": tracks[0]!["sourceHash"] = "123"; break;
+                case "wrong-clip-id": clip["id"] = "bad-id"; break;
+                case "empty-audit": tracks.Clear(); break;
+            }
+            try
+            {
+                File.WriteAllText(nativePath, report.ToJsonString());
+                try { await UnityAdaptationResults.ImportAsync(saved, deadline.Token); throw new Exception("Tampered track audit accepted: " + mutation); }
+                catch (InvalidDataException error) { checks.Add(new { mutation, rejected = true, error.Message }); }
+            }
+            finally { File.WriteAllBytes(nativePath, bytes); }
+        }
+        var config = JsonNode.Parse(File.ReadAllText(Path.Combine(root, "adaptation.json")))!;
+        string evidence = Path.Combine(root, config["clips"]![0]!["sourceRig"]!.GetValue<string>());
+        byte[] sourceBytes = File.ReadAllBytes(evidence);
+        try
+        {
+            File.AppendAllText(evidence, " ");
+            try { await UnityAdaptationResults.ImportAsync(saved, deadline.Token); throw new Exception("Changed source rig accepted"); }
+            catch (InvalidDataException error) { checks.Add(new { mutation = "source-rig-digest", rejected = true, error.Message }); }
+        }
+        finally { File.WriteAllBytes(evidence, sourceBytes); }
+        Require((await UnityAdaptationResults.ImportAsync(saved, deadline.Token)).Adapted, "Untouched restored audit accepted");
+        JsonFiles.Write(Path.Combine(reports, "audit-guards.json"), new { passed = true, checks, nativeReportRestored = File.ReadAllBytes(nativePath).SequenceEqual(bytes), sourceRigRestored = File.ReadAllBytes(evidence).SequenceEqual(sourceBytes) });
     }
     else if (args[3] == "source-rig")
     {
@@ -128,20 +185,27 @@ try
         JsonFiles.Write(Path.Combine(reports, "scan-result.json"), result);
         Console.WriteLine($"Scan complete: {result.Catalog?.Characters.Count} characters, {result.CatalogPath}");
     }
-    else if (args[3] is "actor-movement" or "actors-advanced")
+    else if (args[3] is "actor-movement" or "actors-advanced" or "actors-rig" or "actors-rig-retry" or "actors-rig-reprepare")
     {
         var results = new List<object>();
         foreach (string actor in (Environment.GetEnvironmentVariable("ENDFIELD_ACCEPTANCE_ACTORS") ?? "avywen,lifeng").Split(','))
         {
-            string sourcePlan = File.ReadAllText(Path.Combine(reports, "actors", actor, "plan-path.txt")).Trim();
+            bool rigCase = args[3].StartsWith("actors-rig", StringComparison.Ordinal);
+            string discoveryReports = rigCase ? Path.Combine(Path.GetDirectoryName(reports)!, "remaining_acceptance_20261026") : reports;
+            string sourcePlan = File.ReadAllText(Path.Combine(discoveryReports, "actors", actor, "plan-path.txt")).Trim();
             var source = new SavedPlan(sourcePlan, JsonFiles.Read<ExtractionPlan>(sourcePlan));
             var sharedBundle = original.Plan.Bundles.Single(b => b.Id == "883c322914dd6cf6f62424d8.ab");
             string sharedName = actor == "avywen" ? "female_walk" : "male_walk";
             var shared = new ResourceEntry { Id = actor + ":acceptance:shared-walk", Name = sharedName, Kind = ResourceKind.Animation,
                 Association = AssociationKind.NameCandidate, Evidence = "Explicit shared-motion compatibility test; not an automatic character association", BundleIds = [sharedBundle.Id] };
-            var plan = source.Plan with { Id = Guid.NewGuid(), Resources = [..source.Plan.Resources, shared],
+            var plan = source.Plan with { Id = Guid.NewGuid(), Options = source.Plan.Options with { WorkspaceDirectory = Path.Combine(reports, "actors", actor, "workspace") }, Resources = [..source.Plan.Resources, shared],
                 RequestedResourceIds = [..source.Plan.RequestedResourceIds, shared.Id], Bundles = [..source.Plan.Bundles, sharedBundle] };
-            var saved = new WorkspaceStore().Save(plan);
+            bool reuse = args[3] is "actors-rig-retry" or "actors-rig-reprepare";
+            string? retryPath = reuse ? Directory.GetFiles(Path.Combine(reports, "actors", actor, "workspace", "tasks"), "plan.json", SearchOption.AllDirectories).Single() : null;
+            var saved = reuse ? new SavedPlan(retryPath!, JsonFiles.Read<ExtractionPlan>(retryPath!)) : new WorkspaceStore().Save(plan);
+            File.WriteAllText(Path.Combine(reports, "actors", actor, "rig-plan-path.txt"), saved.FilePath);
+            if (!reuse)
+            {
             var priorBundles = BundleExtractionBackend.ReadResult(source)!;
             foreach (var file in priorBundles.Files)
             {
@@ -149,18 +213,20 @@ try
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!); File.Copy(file.Path, destination, false);
             }
             await new BundleExtractionBackend().ExecuteAsync(saved, progress, deadline.Token);
-            var inspected = await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
+            }
+            var inspected = args[3] == "actors-rig-reprepare" ? ObjectWorkflow.ReadResult(saved)! : await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
             var inventory = ObjectWorkflow.ReadInventory(saved, inspected.InventoryPath!);
             string modelBundle = actor == "avywen" ? "41423eda1c1aee78b0dce7e7.ab" : "15adc972d0f961a9a7f52d62.ab";
             var model = inventory.Objects.Single(row => row.IsModelCandidate && row.Name.EndsWith(actor + "_uimodel") && Path.GetFileName(row.SourceBundle) == modelBundle);
-            var names = new[] { sharedName, "A_actor_" + actor + "_ui_overview_loop", "A_actor_" + actor + "_ui_relax_loop" };
+            var names = rigCase ? new[] { sharedName } : new[] { sharedName, "A_actor_" + actor + "_ui_overview_loop", "A_actor_" + actor + "_ui_relax_loop" };
             var clips = names.Select(name => inventory.Objects.Single(row => row.Kind == "AnimationClip" && row.Name == name)).ToList();
+            string rigKey = rigCase ? inventory.Objects.Single(o => o.IsModelCandidate && o.Name == (actor == "avywen" ? "SK_actor_female" : "SK_actor_male") && Path.GetFileName(o.SourceBundle) == "7cde33b2f3a520fa070d2454.ab").Key : "";
             var prepared = await new ObjectWorkflow().ExecuteAsync(saved, "prepare", inspected.InventoryPath,
                 new ObjectExportSelection(model.Key, model.LinkedAvatarKey ?? throw new Exception("Selected model has no linked Avatar"), clips.Select(c => c.Key).ToList(),
-                    new AnimationPreparationOptions { ModelImportScale = 100, DropUnmatched = args[3] == "actors-advanced" }), progress, deadline.Token);
+                    new AnimationPreparationOptions { ModelImportScale = 100, SourceRigKey = rigKey, DropUnmatched = rigCase || args[3] == "actors-advanced" }), progress, deadline.Token);
             File.WriteAllText(Path.Combine(reports, "actors", actor, args[3] + "-plan-path.txt"), saved.FilePath);
             var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
-            Require(generated.Result.Adapted && generated.Result.ExpectedAdaptedClips == 3, "Shared movement and two idles generated for " + actor);
+            Require(generated.Result.Adapted && generated.Result.ExpectedAdaptedClips == names.Length, "Exact requested actor clips generated for " + actor);
             File.WriteAllText(Path.Combine(reports, "actors", actor, "movement-plan-path.txt"), saved.FilePath);
             JsonFiles.Write(Path.Combine(reports, "actors", actor, args[3] + "-generation.json"), new { passed = true, advancedOption = args[3] == "actors-advanced", fullTrackFidelity = false, model, clips, prepared, generated, saved.FilePath, playbackVerified = false });
             results.Add(new { actor, saved.FilePath, prepared.UnityAssetRoot });
@@ -184,14 +250,20 @@ try
         var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
         JsonFiles.Write(Path.Combine(reports, args[3] + "-generation.json"), new { passed = generated.Result.Adapted, advancedOption = args[3] != "shared", fullTrackFidelity = false, model, clips, prepared, generated, saved.FilePath, playbackVerified = false });
     }
-    else if (args[3] is "regression" or "long-path")
+    else if (args[3] is "regression" or "long-path" or "regression-retry" or "long-retry")
     {
-        var state = JsonFiles.Read<TargetState>(statePath);
+        bool retry = args[3].EndsWith("-retry", StringComparison.Ordinal);
+        var state = JsonFiles.Read<TargetState>(retry ? Path.Combine(Path.GetDirectoryName(reports)!, "remaining_acceptance_20261026", "target-state.json") : statePath);
         var prior = new SavedPlan(state.First, JsonFiles.Read<ExtractionPlan>(state.First));
+        if (args[3] == "long-retry")
+        {
+            string originalPlan = Path.Combine(Path.GetDirectoryName(reports)!, "remaining_acceptance_20261026", "长路径 空格", new string('a', 65), new string('b', 65), "工作区", "tasks", "763042d49f3548418c4b7e023161fe5e", "plan.json");
+            prior = new SavedPlan(originalPlan, JsonFiles.Read<ExtractionPlan>(originalPlan));
+        }
         var source = ObjectWorkflow.ReadResult(prior)!;
         var inventory = ObjectWorkflow.ReadInventory(prior, source.InventoryPath!);
         var model = inventory.Objects.Single(row => row.IsModelCandidate && row.PathId == prior.Plan.RootPathId);
-        var names = args[3] == "regression" ? new[] { "A_actor_chen_customized_state_walk_end", "A_actor_chen_customized_state_walk_loop", "A_actor_chen_customized_state_walk_start", "A_actor_chen_ui_overview_loop", "A_actor_chen_ui_relax_loop" } : new[] { "A_actor_chen_ui_relax_loop" };
+        var names = args[3].StartsWith("regression", StringComparison.Ordinal) ? new[] { "A_actor_chen_customized_state_walk_end", "A_actor_chen_customized_state_walk_loop", "A_actor_chen_customized_state_walk_start", "A_actor_chen_ui_overview_loop", "A_actor_chen_ui_relax_loop" } : new[] { "A_actor_chen_ui_relax_loop" };
         var saved = prior;
         if (args[3] == "long-path")
         {

@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using EndfieldChenTool.Framework.Domain;
 using EndfieldChenTool.Framework.Services;
 
@@ -37,6 +38,32 @@ internal static class Program
                 string[] expected = ["customized_state_walk_end", "customized_state_walk_loop", "customized_state_walk_start", "ui_overview_loop", "ui_relax_loop"];
                 bool expectedPresent = expected.All(name => clips.Items.Cast<object>().Any(item => item.ToString()!.Contains(name)));
                 passed = sections.Count == 4 && expectedPresent && playButton && context.Text.Contains(saved.Plan.Options.UnityProject);
+                if (args.Length > 3 && args[3] == "audit")
+                {
+                    var audit = (UserControl)Get("trackAudit")!;
+                    var auditType = audit.GetType();
+                    var grid = (DataGridView)auditType.GetField("grid", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(audit)!;
+                    var onlyLoss = (CheckBox)auditType.GetField("lossesOnly", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(audit)!;
+                    var search = (TextBox)auditType.GetField("search", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(audit)!;
+                    var choice = (ComboBox)Get("sourceRigChoice")!;
+                    var prepared = ObjectWorkflow.ReadPreparation(saved)!;
+                    var resolved = UnityTaskTarget.Resolve(saved);
+                    var native = JsonFiles.Read<JsonElement>(Path.Combine(resolved.Plan.Options.UnityProject, prepared.UnityAssetRoot!, "Generated", "adaptation-result.json"));
+                    var nativeClips = native.GetProperty("clips").EnumerateArray().ToArray();
+                    var rows = nativeClips.SelectMany(c => c.GetProperty("tracks").EnumerateArray()).ToArray();
+                    int expectedLoss = nativeClips.Sum(c => c.GetProperty("tracks").EnumerateArray().Count(t => !c.GetProperty("adapted").GetBoolean() || t.GetProperty("decision").GetString() != "retain"));
+                    bool lossCount = onlyLoss.Checked && grid.Rows.Count == expectedLoss;
+                    onlyLoss.Checked = false; Application.DoEvents();
+                    bool allCount = grid.Rows.Count == rows.Length;
+                    search.Text = "2563774185"; Application.DoEvents();
+                    bool hashFilter = grid.Rows.Count == rows.Count(r => r.GetProperty("sourceHash").GetString() == search.Text) && grid.Rows.Count > 0;
+                    search.Clear(); onlyLoss.Checked = true;
+                    var tab = (TabPage)audit.Parent!; ((TabControl)tab.Parent!).SelectedTab = tab;
+                    Application.DoEvents();
+                    bool sourceRigAvailable = choice.Items.Cast<object>().Any(i => i.ToString()!.Contains("SK_actor_female"));
+                    passed &= lossCount && allCount && hashFilter && sourceRigAvailable;
+                    JsonFiles.Write(Path.Combine(reports, "audit-ui-verification.json"), new { passed, lossCount, allCount, hashFilter, sourceRigAvailable, expectedLoss, total = rows.Length, mouseInteractionTested = false });
+                }
                 using var bitmap = new Bitmap(form.Width, form.Height); form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
                 bitmap.Save(Path.Combine(reports, "workbench.png"));
                 JsonFiles.Write(Path.Combine(reports, "ui-verification.json"), new { passed, title = form.Text, navigationEntries = sections.Count,

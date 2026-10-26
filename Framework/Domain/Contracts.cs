@@ -170,6 +170,7 @@ public sealed record BundleObjectRow
     public int HierarchyNodes { get; init; }
     public string? RigEvidencePath { get; init; }
     public string? RigEvidenceSha256 { get; init; }
+    public string? RigEvidenceError { get; init; }
     public override string ToString() => $"{Name} [{PathId}]";
 }
 

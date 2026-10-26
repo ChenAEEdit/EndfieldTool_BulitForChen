@@ -61,7 +61,7 @@ internal sealed partial class WorkspaceForm
         settings.Controls.Add(Note("位移归零节点"), 0, 2); settings.Controls.Add(normalizeRoot, 1, 2);
         settings.Controls.Add(Note("排除后代路径"), 0, 3); settings.Controls.Add(excludedDescendants, 1, 3);
         settings.Controls.Add(Note("排除节点路径"), 0, 4); settings.Controls.Add(excludedNodes, 1, 4);
-        settings.Controls.Add(Note("动作原骨架"), 0, 5); settings.Controls.Add(sourceRigChoice, 1, 5);
+        settings.Controls.Add(Note("源骨架候选"), 0, 5); settings.Controls.Add(sourceRigChoice, 1, 5);
         advanced.Controls.Add(settings, 0, 0);
         var flags = Flow(); flags.Controls.AddRange([dropUnmatched, dropSceneTranslation, forceLoop, createPreviewScene]);
         advanced.Controls.Add(flags, 0, 1);
@@ -114,8 +114,20 @@ internal sealed partial class WorkspaceForm
     private static string PreviewResultText(SavedPlan original, ObjectOperationResult result)
     {
         var saved = UnityTaskTarget.Resolve(original);
+        string audit = "";
+        try
+        {
+            var report = UnityDiagnosticReport.ReadVerifiedReport(saved);
+            var tracks = report.GetProperty("clips").EnumerateArray().SelectMany(c => c.TryGetProperty("tracks", out var t) ? t.EnumerateArray().ToArray() : []).ToArray();
+            if (tracks.Length > 0)
+            {
+                int omitted = tracks.Count(t => t.GetProperty("decision").GetString() != "retain");
+                audit = $"轨道：输出 {tracks.Length - omitted}／源 {tracks.Length}；未输出 {omitted}。" + (omitted > 0 ? "请查看“轨道明细”，本次不是完整保留。" : "") + "\r\n";
+            }
+        }
+        catch (Exception error) { audit = "轨道明细暂不可读：" + error.Message + "\r\n"; }
         return $"生成完成 · {result.ExpectedAdaptedClips} 条动画\r\n目标项目：{saved.Plan.Options.UnityProject}\r\n"
-            + "生成文件已核对；实际播放尚未验证。\r\n\r\n预览场景：\r\n" + (result.UnityPreviewScene ?? "本次未启用预览场景")
+            + audit + "生成文件已核对；实际播放尚未验证。\r\n\r\n预览场景：\r\n" + (result.UnityPreviewScene ?? "本次未启用预览场景")
             + "\r\n\r\n" + string.Join("\r\n", result.Warnings);
     }
 

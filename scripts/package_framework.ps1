@@ -145,7 +145,7 @@ foreach ($file in @('Program.cs', 'WorkspaceAdaptationVerification.csproj')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceAdaptationVerification\' + $file)) -Destination (Join-Path $adaptationVerification $file) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'sources\verification\UnityPreviewVerification.cs') -Destination (Join-Path $packageRoot 'sources\verification\UnityPreviewVerification.cs') -Force
-foreach ($name in @('UnityMenuVerification.cs', 'UnityLaunchVerification.cs', 'UnityEdgeVerification.cs', 'UnityHoldVerification.cs', 'UnityMouseVerification.cs', 'UnityGeneratedKneeVerification.cs', 'UnityMappingVerification.cs', 'inspect_candidate_dependencies.py')) {
+foreach ($name in @('UnityMenuVerification.cs', 'UnityLaunchVerification.cs', 'UnityEdgeVerification.cs', 'UnityHoldVerification.cs', 'UnityMouseVerification.cs', 'UnityGeneratedKneeVerification.cs', 'UnityMappingVerification.cs', 'UnitySharedRigVerification.cs', 'inspect_shared_rig_catalog.py', 'inspect_candidate_dependencies.py')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\' + $name)) -Destination (Join-Path $packageRoot ('sources\verification\' + $name)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\verify_preview_project.ps1') -Destination (Join-Path $packageRoot 'scripts\verify_preview_project.ps1') -Force

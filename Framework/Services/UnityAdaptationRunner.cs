@@ -17,6 +17,8 @@ public sealed record UnityGenerationRun
     public string Message { get; init; } = "正在检查适配包。";
     public string LogPath { get; init; } = "";
     public string ReceiptPath { get; init; } = "";
+    public string NativeLogPath { get; init; } = "";
+    public string NativeReceiptPath { get; init; } = "";
     public string? EditorBackup { get; init; }
     public string? RuntimeBackup { get; init; }
     public DateTimeOffset StartedAt { get; init; } = DateTimeOffset.Now;
@@ -117,14 +119,25 @@ public sealed class UnityAdaptationRunner
                 if (HasGeneratedAssets(generated))
                     throw new InvalidDataException("本包已有生成内容。请重新生成适配包，保留已有修改。");
                 RequireClosedProject(run.Project);
+                string nativeLog = run.LogPath, nativeReceipt = run.ReceiptPath;
+                if (Math.Max(nativeLog.Length, nativeReceipt.Length) >= 240)
+                {
+                    string nativeRoot = UnityProjectFiles.Within(run.Project, "Library/EndfieldCharacterWorkbench/runs/" + invocation);
+                    nativeLog = Path.Combine(nativeRoot, "unity.log"); nativeReceipt = Path.Combine(nativeRoot, "native-completion.json");
+                    if (Math.Max(nativeLog.Length, nativeReceipt.Length) >= 240)
+                        throw new InvalidDataException("Unity 工程路径过长，原生编辑器无法写入日志；请选择更短的工程目录。任务工作区无需移动。");
+                    if (Directory.Exists(nativeRoot)) throw new InvalidDataException("本次原生运行目录意外存在，已停止以保留内容。");
+                    Directory.CreateDirectory(nativeRoot);
+                    run = run with { NativeLogPath = nativeLog, NativeReceiptPath = nativeReceipt };
+                }
                 var info = new ProcessStartInfo(Path.GetFullPath(saved.Plan.Options.UnityEditor))
                 { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = run.Project };
                 foreach (string argument in new[] { "-batchmode", "-quit", "-projectPath", run.Project,
-                    "-executeMethod", "EndfieldCharacterWorkbench.Editor.CharacterAnimationAdapter.BuildBatch", "-logFile", run.LogPath })
+                    "-executeMethod", "EndfieldCharacterWorkbench.Editor.CharacterAnimationAdapter.BuildBatch", "-logFile", nativeLog })
                     info.ArgumentList.Add(argument);
                 info.Environment["ENDFIELD_ADAPT_CONFIG"] = configPath;
                 info.Environment["ENDFIELD_ADAPT_INVOCATION"] = invocation;
-                info.Environment["ENDFIELD_ADAPT_RECEIPT"] = run.ReceiptPath;
+                info.Environment["ENDFIELD_ADAPT_RECEIPT"] = nativeReceipt;
                 info.Environment["ENDFIELD_ADAPT_CONFIG_SHA256"] = preparation.UnityConfigSha256;
                 using var process = new Process { StartInfo = info };
                 Publish("unity", "正在启动 Unity 原生生成；首次导入和编译可能需要数分钟。", 40);
@@ -146,7 +159,7 @@ public sealed class UnityAdaptationRunner
                     {
                         await Task.WhenAny(exit, Task.Delay(TimeSpan.FromSeconds(5), linked.Token));
                         linked.Token.ThrowIfCancellationRequested();
-                        progress.Report(new($"Unity 正在导入／生成，已等待 {watch.Elapsed:mm\\:ss}；日志：{run.LogPath}", 55));
+                        progress.Report(new($"Unity 正在导入／生成，已等待 {watch.Elapsed:mm\\:ss}；日志：{nativeLog}", 55));
                     }
                     await exit;
                     linked.Token.ThrowIfCancellationRequested();
@@ -165,7 +178,11 @@ public sealed class UnityAdaptationRunner
                         catch (System.ComponentModel.Win32Exception) { }
                         await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
                     }
-                    if (process.HasExited) run = run with { ExitCode = process.ExitCode };
+                    if (process.HasExited)
+                    {
+                        run = run with { ExitCode = process.ExitCode };
+                        ArchiveNativeFile(nativeLog, run.LogPath); ArchiveNativeFile(nativeReceipt, run.ReceiptPath);
+                    }
                 }
                 Publish("verify", "正在检查本次 Unity 回执、生成文件和摘要。", 85);
                 if (run.ExitCode != 0)
@@ -212,7 +229,24 @@ public sealed class UnityAdaptationRunner
         if (!string.Equals(run.LogPath, Path.Combine(root, "unity.log"), StringComparison.OrdinalIgnoreCase)
             || !string.Equals(run.ReceiptPath, Path.Combine(root, "native-completion.json"), StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Unity 日志路径不属于本次运行。");
+        if (run.NativeLogPath.Length > 0 || run.NativeReceiptPath.Length > 0)
+        {
+            string nativeRoot = UnityProjectFiles.Within(run.Project, "Library/EndfieldCharacterWorkbench/runs/" + run.InvocationId);
+            if (!run.NativeLogPath.Equals(Path.Combine(nativeRoot, "unity.log"), StringComparison.OrdinalIgnoreCase)
+                || !run.NativeReceiptPath.Equals(Path.Combine(nativeRoot, "native-completion.json"), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Unity 原生运行记录目录不属于本次调用。");
+        }
         return run;
+    }
+
+    private static void ArchiveNativeFile(string source, string destination)
+    {
+        if (source.Equals(destination, StringComparison.OrdinalIgnoreCase) || !File.Exists(source)) return;
+        UnityProjectFiles.NoLinks(source); UnityProjectFiles.NoLinks(destination);
+        string hash = UnityProjectFiles.Hash(source, CancellationToken.None);
+        File.Copy(source, destination, overwrite: false);
+        if (UnityProjectFiles.Hash(destination, CancellationToken.None) != hash)
+            throw new IOException("原生运行记录归档摘要不一致：" + destination);
     }
 
     internal static void ValidateProject(string project, string editor)
