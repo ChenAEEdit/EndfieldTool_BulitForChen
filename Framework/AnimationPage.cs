@@ -83,7 +83,7 @@ internal sealed partial class WorkspaceForm
         })));
         foreach (Control action in actions.Controls) objectActions.Add(action);
         advanced.Controls.Add(actions, 0, 2);
-        var advancedPreview = Collapsible("高级：单位、骨骼规则与单步执行", advanced, 470);
+        var advancedPreview = Collapsible("高级：单位、骨骼规则与单步执行", advanced, 470, limitHeight: false);
         layout.Controls.Add(advancedPreview, 0, 3);
         layout.Controls.Add(adaptationDetails, 0, 4);
         retryConverted.Click += async (_, _) => await RetryConvertedAsync();

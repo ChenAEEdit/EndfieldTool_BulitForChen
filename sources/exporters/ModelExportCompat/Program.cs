@@ -1,6 +1,7 @@
 using AnimeStudio;
 using System.Text.Json;
 
+Console.OutputEncoding = new System.Text.UTF8Encoding(false);
 var options = ParseOptions(args);
 var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
 if (!options.TryGetValue("input", out var input) ||

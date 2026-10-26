@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
+Console.OutputEncoding = new UTF8Encoding(false);
 var options = new Dictionary<string, string>();
 for (int index = 0; index + 1 < args.Length; index += 2) options.Add(args[index], args[index + 1]);
 var input = Path.GetFullPath(options["--input"]);

@@ -30,6 +30,14 @@ public sealed record UnityGenerationOutcome(ObjectOperationResult Result, UnityG
 
 public sealed class UnityAdaptationRunner
 {
+    private readonly TimeSpan generationTimeout;
+
+    public UnityAdaptationRunner(TimeSpan? generationTimeout = null)
+    {
+        this.generationTimeout = generationTimeout ?? TimeSpan.FromMinutes(60);
+        if (this.generationTimeout <= TimeSpan.Zero || this.generationTimeout > TimeSpan.FromMinutes(60))
+            throw new ArgumentOutOfRangeException(nameof(generationTimeout));
+    }
     private const string EditorRelative = "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs";
     private const string RuntimeRelative = "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs";
     private const string PreviousEditorHash = "D7AC1920F4772F739F2E849FD9AFD858F5ECDD62A093227BAFB07C60A35320FA";
@@ -38,7 +46,7 @@ public sealed class UnityAdaptationRunner
     public Task<UnityGenerationOutcome> ExecuteAsync(SavedPlan saved, IProgress<ExtractionProgress> progress,
         CancellationToken token) => Task.Run(() => ExecuteCoreAsync(saved, progress, token), token);
 
-    private static async Task<UnityGenerationOutcome> ExecuteCoreAsync(SavedPlan saved,
+    private async Task<UnityGenerationOutcome> ExecuteCoreAsync(SavedPlan saved,
         IProgress<ExtractionProgress> progress, CancellationToken token)
     {
         var preparation = UnityAdaptationResults.ValidatePreparation(saved);
@@ -122,7 +130,7 @@ public sealed class UnityAdaptationRunner
                 Publish("unity", "正在启动 Unity 原生生成；首次导入和编译可能需要数分钟。", 40);
                 token.ThrowIfCancellationRequested();
                 if (!process.Start()) throw new IOException("无法启动 Unity。");
-                using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(60));
+                using var timeout = new CancellationTokenSource(generationTimeout);
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, timeout.Token);
                 using var cancel = linked.Token.Register(() =>
                 {
@@ -144,7 +152,10 @@ public sealed class UnityAdaptationRunner
                     linked.Token.ThrowIfCancellationRequested();
                 }
                 catch (OperationCanceledException) when (!token.IsCancellationRequested && timeout.IsCancellationRequested)
-                { throw new TimeoutException("Unity 运行超过 60 分钟，已结束本次启动的进程；请查看日志。"); }
+                {
+                    string duration = generationTimeout.TotalMinutes >= 1 ? $"{generationTimeout.TotalMinutes:g} 分钟" : $"{generationTimeout.TotalSeconds:g} 秒";
+                    throw new TimeoutException($"Unity 运行超过 {duration}，已结束本次启动的进程；请查看日志。");
+                }
                 finally
                 {
                     if (!process.HasExited)

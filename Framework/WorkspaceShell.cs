@@ -151,7 +151,7 @@ internal sealed partial class WorkspaceForm
         catch (Exception error) { projectContext.Text = "目标项目读取失败：" + error.Message; changeTarget.Enabled = task != null; }
     }
 
-    private Control Collapsible(string title, Control content, int height)
+    private Control Collapsible(string title, Control content, int height, bool limitHeight = true)
     {
         var container = Grid(1, 2);
         container.AutoSize = true; container.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -160,14 +160,15 @@ internal sealed partial class WorkspaceForm
         var toggle = new CheckBox { Text = title, Dock = DockStyle.Fill, Appearance = Appearance.Button,
             TextAlign = ContentAlignment.MiddleLeft, FlatStyle = FlatStyle.Flat };
         content.Visible = false;
-        var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = limitHeight };
         content.Dock = DockStyle.Top; content.Height = height; content.MinimumSize = new Size(0, height);
         viewport.Controls.Add(content);
         toggle.CheckedChanged += (_, _) =>
         {
             content.Visible = toggle.Checked;
-            container.RowStyles[1].Height = toggle.Checked ? Math.Min(height, 255) : 0;
-            container.Height = 37 + (toggle.Checked ? Math.Min(height, 255) : 0);
+            int expanded = limitHeight ? Math.Min(height, 255) : height;
+            container.RowStyles[1].Height = toggle.Checked ? expanded : 0;
+            container.Height = 37 + (toggle.Checked ? expanded : 0);
         };
         container.Controls.Add(toggle, 0, 0); container.Controls.Add(viewport, 0, 1);
         return container;

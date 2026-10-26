@@ -119,7 +119,18 @@ public static class CharacterAnimationAdapter
         if (!Directory.Exists(generated) || !Directory.EnumerateFileSystemEntries(generated).Any(file =>
             Directory.Exists(file) || Path.GetFileName(file) != "adaptation-result.json" && !file.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)))
             Build(path);
-        OpenExistingPreview(path, false);
+        var config = JsonUtility.FromJson<Config>(File.ReadAllText(path));
+        if (config.preview != null && config.preview.enabled) OpenExistingPreview(path, false);
+        else
+        {
+            ValidateExistingResult(path);
+            string prefabPath = Path.GetDirectoryName(path).Replace('\\', '/') + "/Generated/Character.prefab";
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            if (!prefab) throw new Exception("已有结果缺少预制体，请保留修改并在工作台建立新包。");
+            Selection.activeObject = prefab;
+            EditorGUIUtility.PingObject(prefab);
+            Debug.Log("已生成并核对动画预制体：" + prefabPath + "。本包未请求预览场景。");
+        }
     }
 
     [MenuItem("Endfield Character Tool/打开并播放动画预览")]
@@ -144,7 +155,7 @@ public static class CharacterAnimationAdapter
             : "项目中有多个适配包，请选择需要的包文件夹、配置、Prefab 或预览场景，再打开动画预览。");
     }
 
-    public static string OpenExistingPreview(string configPath, bool play)
+    static BuildReport ValidateExistingResult(string configPath)
     {
         configPath = configPath.Replace('\\', '/');
         if (!Regex.IsMatch(configPath, "^Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32}/adaptation.json$"))
@@ -194,8 +205,15 @@ public static class CharacterAnimationAdapter
                 if (!expected.Remove(file.path) || !File.Exists(file.path) || new FileInfo(file.path).Length != file.bytes || Hash(file.path) != file.sha256)
                     throw new Exception("资产引用已变化，请先核对结果或生成独立新包。");
         }
-        string scenePath = generated + "/CharacterPreview.unity";
-        if (!report.previewCreated || report.previewScene != scenePath || !outputs.Contains(scenePath))
+        return report;
+    }
+
+    public static string OpenExistingPreview(string configPath, bool play)
+    {
+        configPath = configPath.Replace('\\', '/');
+        var report = ValidateExistingResult(configPath);
+        string scenePath = Path.GetDirectoryName(configPath).Replace('\\', '/') + "/Generated/CharacterPreview.unity";
+        if (!report.previewCreated || report.previewScene != scenePath || !report.outputs.Any(item => item.path == scenePath))
             throw new Exception("本包未生成预览场景。请在工作台勾选生成预览场景后建立新包。");
         var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         if (EditorApplication.isPlayingOrWillChangePlaymode)

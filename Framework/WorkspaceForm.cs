@@ -49,11 +49,15 @@ internal sealed partial class WorkspaceForm : Form
     {
         Text = "终末地角色工作台 · 动画播放修复 0.11.1";
         Font = new Font("Microsoft YaHei UI", 10);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96, 96);
         BackColor = Color.FromArgb(244, 247, 249);
         ForeColor = Ink;
         ClientSize = new Size(1320, 900);
         MinimumSize = new Size(1050, 800);
         StartPosition = FormStartPosition.CenterScreen;
+        Shown += (_, _) => FitToDisplay();
+        DpiChanged += (_, _) => BeginInvoke(new Action(FitToDisplay));
 
         var layout = rootLayout = Grid(1, 4);
         layout.Padding = new Padding(18);
@@ -132,6 +136,20 @@ internal sealed partial class WorkspaceForm : Form
         RunAction(RefreshTasks);
         sectionButtons[0].BackColor = Accent; sectionButtons[0].ForeColor = Color.White;
         UpdateContext();
+    }
+
+    private void FitToDisplay()
+    {
+        var area = Screen.FromControl(this).WorkingArea;
+        float scale = DeviceDpi / 96f;
+        MinimumSize = new Size(Math.Min(area.Width, (int)Math.Ceiling(1050 * scale)),
+            Math.Min(area.Height, (int)Math.Ceiling(800 * scale)));
+        if (Width > area.Width || Height > area.Height || !area.Contains(Bounds))
+        {
+            int width = Math.Min(Width, area.Width), height = Math.Min(Height, area.Height);
+            Bounds = new Rectangle(Math.Clamp(Left, area.Left, area.Right - width),
+                Math.Clamp(Top, area.Top, area.Bottom - height), width, height);
+        }
     }
 
     private void BuildCatalogPage()

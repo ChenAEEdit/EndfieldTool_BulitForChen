@@ -5,8 +5,18 @@ namespace EndfieldChenTool.Framework.Services;
 
 public sealed record PreviewOpenOutcome(ObjectOperationResult Result, string Message);
 
-public sealed class UnityPreviewLauncher(bool showEditor = true)
+public sealed class UnityPreviewLauncher
 {
+    private readonly bool showEditor;
+    private readonly TimeSpan responseTimeout;
+
+    public UnityPreviewLauncher(bool showEditor = true, TimeSpan? responseTimeout = null)
+    {
+        this.showEditor = showEditor;
+        this.responseTimeout = responseTimeout ?? TimeSpan.FromMinutes(3);
+        if (this.responseTimeout <= TimeSpan.Zero || this.responseTimeout > TimeSpan.FromMinutes(3))
+            throw new ArgumentOutOfRangeException(nameof(responseTimeout));
+    }
     private sealed record Request(string Schema, string RequestId, string ConfigPath, string ConfigSha256, bool Play);
     private sealed record Receipt(string Schema, string RequestId, string? Scene, string? Error, string Status, bool PlayRequested);
 
@@ -74,7 +84,7 @@ public sealed class UnityPreviewLauncher(bool showEditor = true)
             }
             progress.Report(new(open ? "已向当前 Unity 项目发送打开并播放请求。" : "正在打开 Unity 项目并进入预览；请留意 Unity 窗口。", 55));
             var watch = Stopwatch.StartNew();
-            while (watch.Elapsed < TimeSpan.FromMinutes(3))
+            while (watch.Elapsed < responseTimeout)
             {
                 token.ThrowIfCancellationRequested();
                 Receipt? receipt = null;

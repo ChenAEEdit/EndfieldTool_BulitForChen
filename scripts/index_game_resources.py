@@ -212,8 +212,34 @@ def make_catalog(hits, records, manifest, fingerprint, build, manifest_md5, cove
                             "virtualPath": row["name"], "dependencyIds": [], "missingDependencyNames": []}
         return key
 
-    # Process iteratively because the manifest graph may contain cycles.
+    # A character root name can occur in an animation controller. Its users
+    # can contain the actual model prefab. Keep these as separate, explicitly
+    # unconfirmed candidates; never promote a string hit to a confirmed model.
+    related_hits = []
+    skipped_reverse_groups = 0
     for hit in hits:
+        if hit["kind"] != "Model":
+            continue
+        virtual = hit["bundle"].replace("\\", "/").lower().split("/windows/", 1)[-1]
+        matches = by_name.get(virtual, [])
+        if len(matches) != 1:
+            continue
+        parents = matches[0].direct_reverse_dependencies
+        if len(parents) > 64:
+            skipped_reverse_groups += 1
+            continue
+        for index in parents:
+            parent = manifest.bundles[index]
+            found = available.get(parent.name.lower(), [])
+            if len(found) != 1:
+                continue
+            row = found[0]
+            include(row)
+            related_hits.append(dict(hit, bundle=row["name"], group=row["group"],
+                evidence=f"资源清单直接反向引用 {hit['bundle']}；原包中出现名称 {hit['name']}。此包可能包含引用该控制器的模型，尚未解析对象或确认骨架。"))
+
+    # Process iteratively because the manifest graph may contain cycles.
+    for hit in [*hits, *related_hits]:
         key = hit["bundle"].replace("\\", "/").lower().split("/windows/", 1)[-1]
         for row in available.get(key, []):
             if row["group"] == hit["group"]:
@@ -247,7 +273,7 @@ def make_catalog(hits, records, manifest, fingerprint, build, manifest_md5, cove
 
     characters = defaultdict(list)
     unique = set()
-    for hit in hits:
+    for hit in [*hits, *related_hits]:
         bundle_id = hit["group"] + ":" + hit["bundle"]
         resource_key = (hit["character"], hit["name"].lower(), bundle_id)
         if resource_key in unique:
@@ -257,10 +283,11 @@ def make_catalog(hits, records, manifest, fingerprint, build, manifest_md5, cove
         characters[hit["character"]].append({"id": "candidate:" + resource_id, "name": hit["name"],
             "kind": hit["kind"], "sourcePath": hit["bundle"], "rig": "Unknown", "backendKey": "",
             "association": "NameCandidate", "bundleIds": [bundle_id],
-            "evidence": f"未加密 Bundle 内明文名称；{hit['group']}/{hit['chunk']}；Bundle 内偏移 {hit['offset']}。未解析对象类型或骨架。"})
+            "evidence": hit.get("evidence", f"未加密 Bundle 内明文名称；{hit['group']}/{hit['chunk']}；Bundle 内偏移 {hit['offset']}。未解析对象类型或骨架。")})
+    coverage += f" 补充清单直接反向引用模型候选 {len(related_hits)} 条；{skipped_reverse_groups} 组因反向引用超过 64 条未扩展。候选仍需实际解析和确认。"
     catalog = {"schema": "endfield-character-catalog-v1", "gameBuild": build,
         "gameAssemblySha256": fingerprint, "createdAt": datetime.now(timezone.utc).isoformat(),
-        "sourceDescription": f"本机 VFS 明文名称候选；manifest={manifest_md5}", "coverageNote": coverage,
+        "sourceDescription": f"本机 VFS 明文名称及清单直接反向引用候选；manifest={manifest_md5}", "coverageNote": coverage,
         "bundles": sorted(bundle_refs.values(), key=lambda item: item["id"]),
         "characters": [{"id": code, "displayName": code + " · 名称候选", "rootName": "", "rootPathId": "",
             "resources": sorted(rows, key=lambda item: (item["kind"], item["name"]))}

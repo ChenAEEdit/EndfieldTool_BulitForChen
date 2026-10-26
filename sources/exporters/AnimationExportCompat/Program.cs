@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Text;
 
+Console.OutputEncoding = new UTF8Encoding(false);
 var options = ParseOptions(args);
 if (!options.TryGetValue("input", out var input) ||
     !options.TryGetValue("output", out var output) ||

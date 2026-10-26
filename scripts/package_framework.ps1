@@ -142,10 +142,18 @@ foreach ($file in @('Program.cs', 'WorkspaceAdaptationVerification.csproj')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceAdaptationVerification\' + $file)) -Destination (Join-Path $adaptationVerification $file) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'sources\verification\UnityPreviewVerification.cs') -Destination (Join-Path $packageRoot 'sources\verification\UnityPreviewVerification.cs') -Force
-foreach ($name in @('UnityMenuVerification.cs', 'UnityLaunchVerification.cs')) {
+foreach ($name in @('UnityMenuVerification.cs', 'UnityLaunchVerification.cs', 'UnityEdgeVerification.cs', 'UnityHoldVerification.cs', 'inspect_candidate_dependencies.py')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\' + $name)) -Destination (Join-Path $packageRoot ('sources\verification\' + $name)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\verify_preview_project.ps1') -Destination (Join-Path $packageRoot 'scripts\verify_preview_project.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\verify_edge_project.ps1') -Destination (Join-Path $packageRoot 'scripts\verify_edge_project.ps1') -Force
+foreach ($name in @('RemainingAcceptance', 'DesktopAcceptance')) {
+    $destination = Join-Path $packageRoot ('sources\verification\' + $name)
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    foreach ($file in @('Program.cs', ($name + '.csproj'))) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\' + $name + '\' + $file)) -Destination $destination -Force
+    }
+}
 $uiVerification = Join-Path $packageRoot 'sources\verification\WorkspaceUiVerification'
 New-Item -ItemType Directory -Path $uiVerification -Force | Out-Null
 foreach ($name in @('Program.cs', 'WorkspaceUiVerification.csproj')) {
