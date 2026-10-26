@@ -15,7 +15,8 @@ public static class UnitySharedRigVerification
 {
     [Serializable] class Request { public string directory = ""; public string[] configs = new string[0]; }
     [Serializable] class Result { public string schema = "endfield-shared-rig-verification-v1", error; public bool passed; public List<Check> clips = new List<Check>(); public List<string> rejectedInvalidInputs = new List<string>(); }
-    [Serializable] class Check { public string config, clip; public int sampleCount, bodyBones; public float maxRotationError, maxPrimarySegmentAngle, maxLeftArmElevation = -90, maxRightArmElevation = -90; public string worstBone; }
+    [Serializable] class BoneError { public string path; public float degrees, time; public Quaternion source, target; }
+    [Serializable] class Check { public string config, clip, referencePolicy = "decoded-key-values-with-explicit-constant-tangent-modes"; public int sampleCount, bodyBones, referenceTangentAdjustments; public float maxRotationError, maxPrimarySegmentAngle, maxLeftArmElevation = -90, maxRightArmElevation = -90; public string worstBone; public List<BoneError> errors = new List<BoneError>(); }
     public static void Run()
     {
         var request = JsonUtility.FromJson<Request>(File.ReadAllText(Environment.GetEnvironmentVariable("ENDFIELD_SHARED_RIG_CHECK")));
@@ -35,7 +36,8 @@ public static class UnitySharedRigVerification
                     var evidence = JsonUtility.FromJson<CharacterAnimationAdapter.RigEvidence>(File.ReadAllText(root + "/" + input.sourceRig));
                     var detail = report.clips.Single(c => c.id == input.id);
                     if (detail.worldBodyPaths.Count < 15 || detail.bodyAxisChecks.Count < 8) throw new Exception("Missing body/axis audit");
-                    var sourceClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(root + "/" + input.source);
+                    int tangentAdjustments;
+                    var sourceClip = ReferenceClip(AssetDatabase.LoadAssetAtPath<AnimationClip>(root + "/" + input.source), out tangentAdjustments);
                     var outputClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(detail.output);
                     var source = new GameObject("UnmodifiedSource");
                     UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(source, scene);
@@ -61,7 +63,7 @@ public static class UnitySharedRigVerification
                         var targets = target.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, target.transform));
                         var pairs = detail.worldBodyPaths.Select(path => new { path, source = nodes[path], target = targets.Single(p => p.Key == path || p.Key.EndsWith("/" + path, StringComparison.Ordinal)).Value }).ToArray();
                         var allRest = nodes.Values.Concat(targets.Values).Select(t => new { t, p = t.localPosition, q = t.localRotation, s = t.localScale }).ToArray();
-                        var check = new Check { config = configPath, clip = input.name, bodyBones = pairs.Length, sampleCount = 25 };
+                        var check = new Check { config = configPath, clip = input.name, bodyBones = pairs.Length, sampleCount = 25, referenceTangentAdjustments = tangentAdjustments };
                         result.clips.Add(check);
                         for (int frame = 0; frame < check.sampleCount; frame++)
                         {
@@ -71,6 +73,9 @@ public static class UnitySharedRigVerification
                             foreach (var p in pairs)
                             {
                                 float angle = Quaternion.Angle(p.source.rotation, p.target.rotation);
+                                var error = check.errors.FirstOrDefault(e => e.path == p.path);
+                                if (error == null) { error = new BoneError { path = p.path }; check.errors.Add(error); }
+                                if (angle > error.degrees) { error.degrees = angle; error.time = time; error.source = p.source.rotation; error.target = p.target.rotation; }
                                 if (angle > check.maxRotationError) { check.maxRotationError = angle; check.worstBone = p.path; }
                                 foreach (var child in pairs.Where(c => c.source.parent == p.source && c.target.parent == p.target
                                     && detail.bodyAxisChecks.Any(a => a.path == p.path && a.childPath == c.path)))
@@ -87,7 +92,7 @@ public static class UnitySharedRigVerification
                         }
                         if (check.maxRotationError > .25f || check.maxPrimarySegmentAngle > 5) throw new Exception("Source/output pose mismatch: " + input.name);
                     }
-                    finally { UnityEngine.Object.DestroyImmediate(source); UnityEngine.Object.DestroyImmediate(target); }
+                    finally { UnityEngine.Object.DestroyImmediate(source); UnityEngine.Object.DestroyImmediate(target); UnityEngine.Object.DestroyImmediate(sourceClip); }
                 }
             }
             result.passed = result.clips.Count > 0;
@@ -95,6 +100,29 @@ public static class UnitySharedRigVerification
         catch (Exception error) { result.error = error.ToString(); }
         finally { EditorSceneManager.ClosePreviewScene(scene); File.WriteAllText(Path.Combine(request.directory, "shared-rig-verification.json"), JsonUtility.ToJson(result, true)); }
         EditorApplication.Exit(result.passed ? 0 : 1);
+    }
+    static AnimationClip ReferenceClip(AnimationClip raw, out int adjustments)
+    {
+        // Independent implementation of the stated reference policy. Raw file,
+        // key values and times are preserved; invalid tangent metadata is explicit.
+        adjustments = 0;
+        var reference = new AnimationClip { frameRate = raw.frameRate, legacy = false };
+        foreach (var binding in AnimationUtility.GetCurveBindings(raw).Where(b => b.type == typeof(Transform)))
+        {
+            var original = AnimationUtility.GetEditorCurve(raw, binding);
+            var curve = new AnimationCurve(original.keys) { preWrapMode = original.preWrapMode, postWrapMode = original.postWrapMode };
+            for (int i = 0; i < curve.length; i++)
+            {
+                var key = original.keys[i];
+                if (float.IsNaN(key.inTangent) || float.IsInfinity(key.inTangent))
+                { AnimationUtility.SetKeyBroken(curve, i, true); AnimationUtility.SetKeyLeftTangentMode(curve, i, AnimationUtility.TangentMode.Constant); adjustments++; }
+                if (float.IsNaN(key.outTangent) || float.IsInfinity(key.outTangent))
+                { AnimationUtility.SetKeyBroken(curve, i, true); AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.Constant); adjustments++; }
+            }
+            if (curve.keys.Where((k, i) => k.time != original.keys[i].time || k.value != original.keys[i].value).Any()) throw new Exception("Reference changed source key values");
+            AnimationUtility.SetEditorCurve(reference, binding, curve);
+        }
+        return reference;
     }
     static void VerifyRejected(string mode, GameObject target, AnimationClip source, CharacterAnimationAdapter.RigEvidence original, CharacterAnimationAdapter.ClipReport detail)
     {

@@ -46,6 +46,10 @@ public static class CharacterAnimationAdapter
         public string sourceRigKey = "", sourceRigName = "", retargetMode = "direct";
         public int retargetedPositionTracks, retargetedRotationTracks, retargetedScaleTracks;
         public float rotationSampleRate;
+        public bool retargetPoseChecked;
+        public float retargetMaxRotationError;
+        public int samplingTangentAdjustments;
+        public string samplingReferencePolicy = "decoded-key-values-with-explicit-constant-tangent-modes";
         public List<string> sourceRestMissing = new List<string>();
         public List<string> worldBodyPaths = new List<string>();
         public List<string> serializedReferencePaths = new List<string>();
@@ -362,6 +366,7 @@ public static class CharacterAnimationAdapter
         try
         {
             if (sourceRig != null && !humanoid) convertedSource = RetargetSourcePose(target, source, sourceRig, report);
+            if (convertedSource) clip.frameRate = Mathf.Max(source.frameRate, report.rotationSampleRate);
             for (int bindingIndex = 0; bindingIndex < sourceBindings.Length; bindingIndex++)
             {
                 var binding = sourceBindings[bindingIndex];
@@ -432,6 +437,7 @@ public static class CharacterAnimationAdapter
             settings.loopTime = rules.forceLoop || settings.loopTime;
             AnimationUtility.SetAnimationClipSettings(clip, settings);
             if (clip.isHumanMotion != humanoid) throw new Exception("生成动画的播放模式与主体通道不一致。");
+            if (convertedSource) VerifyRetargetedClip(target, source, clip, sourceRig, report);
             report.retainedBindings = AnimationUtility.GetCurveBindings(clip).Length;
             return clip;
         }
@@ -446,6 +452,9 @@ public static class CharacterAnimationAdapter
         if (rig.schema != "endfield-rig-evidence-v1" || rig.nodes == null || rig.nodes.Length == 0 || rig.restPoseKind != "skin-bind-matrices-with-per-node-provenance")
             throw new Exception("动作原骨架缺少真实绑定矩阵及姿态来源，请重新解析对象。");
         var nodes = rig.nodes.ToDictionary(node => node.path, StringComparer.Ordinal);
+        int samplingRepairs;
+        var samplingSource = CreateTransformSamplingClip(source, out samplingRepairs);
+        source = samplingSource; report.samplingTangentAdjustments = samplingRepairs;
         var targets = target.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, target.transform));
         // The unweighted motion carrier above Hips has no skin bind matrix.
         // Its explicitly recorded serialized reference defines motion deltas;
@@ -507,7 +516,7 @@ public static class CharacterAnimationAdapter
                 if (rotations.Length == 0 || Quaternion.Angle(offsetRotation, Quaternion.identity) < .001f) continue;
                 if (rotations.Length != 4) throw new Exception("源四元数轨道不完整，不能可靠换算：" + group.Key);
                 var inputs = rotations.Select(b => AnimationUtility.GetEditorCurve(source, b)).ToArray();
-                float rate = Mathf.Clamp(Mathf.Max(60, source.frameRate), 60, 120);
+                float rate = Mathf.Clamp(Mathf.Max(120, source.frameRate), 120, 240);
                 int frames = Mathf.CeilToInt(source.length * rate);
                 if (frames > 500000) throw new Exception("姿态换算采样超过上限。");
                 var times = new SortedSet<float>(inputs.SelectMany(c => c.keys).Select(k => k.time));
@@ -537,6 +546,36 @@ public static class CharacterAnimationAdapter
             return converted;
         }
         catch { UnityEngine.Object.DestroyImmediate(converted); throw; }
+        finally { UnityEngine.Object.DestroyImmediate(samplingSource); }
+    }
+
+    static AnimationClip CreateTransformSamplingClip(AnimationClip source, out int repairs)
+    {
+        repairs = 0;
+        var clip = new AnimationClip { frameRate = source.frameRate, legacy = false };
+        try
+        {
+            var bindings = AnimationUtility.GetCurveBindings(source).Where(b => b.type == typeof(Transform)).ToArray();
+            var curves = new List<AnimationCurve>();
+            foreach (var binding in bindings)
+            {
+                var input = AnimationUtility.GetEditorCurve(source, binding);
+                var keys = input.keys; var left = new List<int>(); var right = new List<int>();
+                for (int i = 0; i < keys.Length; i++)
+                {
+                    if (!Finite(keys[i].time) || !Finite(keys[i].value)) throw new Exception("源采样曲线包含非法关键帧：" + binding.path);
+                    if (!Finite(keys[i].inTangent)) { keys[i].inTangent = 0; left.Add(i); repairs++; }
+                    if (!Finite(keys[i].outTangent)) { keys[i].outTangent = 0; right.Add(i); repairs++; }
+                }
+                var curve = new AnimationCurve(keys) { preWrapMode = input.preWrapMode, postWrapMode = input.postWrapMode };
+                foreach (int i in left) { AnimationUtility.SetKeyBroken(curve, i, true); AnimationUtility.SetKeyLeftTangentMode(curve, i, AnimationUtility.TangentMode.Constant); }
+                foreach (int i in right) { AnimationUtility.SetKeyBroken(curve, i, true); AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.Constant); }
+                curves.Add(curve);
+            }
+            AnimationUtility.SetEditorCurves(clip, bindings, curves.ToArray());
+            return clip;
+        }
+        catch { UnityEngine.Object.DestroyImmediate(clip); throw; }
     }
 
     static void RetargetBodyWorld(GameObject target, AnimationClip source, AnimationClip converted, RigEvidence rig, ClipReport report)
@@ -558,7 +597,7 @@ public static class CharacterAnimationAdapter
             }
             virtualTarget = UnityEngine.Object.Instantiate(target);
             UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(virtualTarget, scene);
-            foreach (var animator in virtualTarget.GetComponentsInChildren<Animator>(true)) animator.enabled = false;
+            foreach (var animator in virtualTarget.GetComponentsInChildren<Animator>(true)) UnityEngine.Object.DestroyImmediate(animator);
             foreach (var behaviour in virtualTarget.GetComponentsInChildren<MonoBehaviour>(true)) behaviour.enabled = false;
             var targets = virtualTarget.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, virtualTarget.transform));
             var rawBindings = AnimationUtility.GetCurveBindings(source);
@@ -588,28 +627,44 @@ public static class CharacterAnimationAdapter
             }
             body = body.OrderBy(p => p.path.Count(c => c == '/')).ToList();
             if (body.Count < 15) throw new Exception("不足15条完整主体旋转，不能可靠换算共享动作。");
-            sampleTarget = UnityEngine.Object.Instantiate(converted);
-            var sampleBindings = AnimationUtility.GetCurveBindings(sampleTarget);
+            // Reference sampling must use exactly the supported Transform channels.
+            // A cloned raw clip can retain Animator/muscle payload that the final
+            // Generic clip deliberately omits, changing intermediate carrier poses.
+            sampleTarget = new AnimationClip { frameRate = converted.frameRate, legacy = false };
+            var sampleBindings = AnimationUtility.GetCurveBindings(converted);
             var remapped = new List<EditorCurveBinding>(); var curves = new List<AnimationCurve>();
             foreach (var binding in sampleBindings)
             {
+                if (binding.type != typeof(Transform) || report.sourceRestMissing.Contains(binding.path)) continue;
                 string path = MatchPath(binding.path, targets.Keys);
                 if (path == null) continue;
                 var mapped = binding; mapped.path = path;
-                remapped.Add(mapped); curves.Add(AnimationUtility.GetEditorCurve(sampleTarget, binding));
+                remapped.Add(mapped); curves.Add(AnimationUtility.GetEditorCurve(converted, binding));
             }
-            AnimationUtility.SetEditorCurves(sampleTarget, sampleBindings, sampleBindings.Select(_ => (AnimationCurve)null).ToArray());
             AnimationUtility.SetEditorCurves(sampleTarget, remapped.ToArray(), curves.ToArray());
             var sourceRest = sourceTransforms.Values.Select(t => (t, t.localPosition, t.localRotation, t.localScale)).ToArray();
             var targetRest = targets.Values.Select(t => (t, t.localPosition, t.localRotation, t.localScale)).ToArray();
-            float rate = Mathf.Clamp(Mathf.Max(60, source.frameRate), 60, 120);
+            float rate = Mathf.Clamp(Mathf.Max(120, source.frameRate), 120, 240);
             int frames = Mathf.CeilToInt(source.length * rate);
             if (frames > 500000) throw new Exception("主体姿态换算采样超过上限。");
+            var times = new SortedSet<float>();
+            for (int frame = 0; frame <= frames; frame++) times.Add(Mathf.Min(source.length, frame / rate));
+            var relevant = new HashSet<string>();
+            foreach (var bone in body)
+                for (var t = bone.source; t != null; t = t.parent) relevant.Add(AnimationUtility.CalculateTransformPath(t, virtualSource.transform));
+            foreach (var binding in rawBindings.Where(b => b.type == typeof(Transform) && relevant.Contains(b.path) && b.propertyName.StartsWith("m_LocalRotation.")))
+                foreach (var key in AnimationUtility.GetEditorCurve(source, binding).keys)
+                {
+                    times.Add(key.time);
+                    if ((!Finite(key.inTangent) || !Finite(key.outTangent)) && key.time > 0)
+                        times.Add(Mathf.Max(0, key.time - .00001f));
+                }
+            if (times.Count > 500000) throw new Exception("主体姿态换算时间点超过上限。");
             var values = body.Select(_ => Enumerable.Range(0, 4).Select(__ => new List<Keyframe>()).ToArray()).ToArray();
             var previous = body.Select(_ => Quaternion.identity).ToArray();
-            for (int frame = 0; frame <= frames; frame++)
+            int sampleIndex = 0;
+            foreach (float time in times)
             {
-                float time = Mathf.Min(source.length, frame / rate);
                 foreach (var p in sourceRest) { p.t.localPosition = p.localPosition; p.t.localRotation = p.localRotation; p.t.localScale = p.localScale; }
                 foreach (var p in targetRest) { p.t.localPosition = p.localPosition; p.t.localRotation = p.localRotation; p.t.localScale = p.localScale; }
                 source.SampleAnimation(virtualSource, time); sampleTarget.SampleAnimation(virtualTarget, time);
@@ -617,10 +672,11 @@ public static class CharacterAnimationAdapter
                 {
                     body[i].target.rotation = body[i].source.rotation;
                     var q = body[i].target.localRotation.normalized;
-                    if (frame > 0 && Quaternion.Dot(previous[i], q) < 0) q = new Quaternion(-q.x, -q.y, -q.z, -q.w);
+                    if (sampleIndex > 0 && Quaternion.Dot(previous[i], q) < 0) q = new Quaternion(-q.x, -q.y, -q.z, -q.w);
                     previous[i] = q;
                     for (int axis = 0; axis < 4; axis++) values[i][axis].Add(new Keyframe(time, q[axis]));
                 }
+                sampleIndex++;
             }
             for (int i = 0; i < body.Count; i++)
             {
@@ -637,6 +693,7 @@ public static class CharacterAnimationAdapter
                 }
             }
             report.retargetMode = "body-world-orientation-and-local-bind-offsets"; report.rotationSampleRate = rate;
+            converted.frameRate = rate;
         }
         finally
         {
@@ -644,6 +701,57 @@ public static class CharacterAnimationAdapter
             if (virtualSource) UnityEngine.Object.DestroyImmediate(virtualSource);
             if (virtualTarget) UnityEngine.Object.DestroyImmediate(virtualTarget);
             EditorSceneManager.ClosePreviewScene(scene);
+        }
+    }
+
+    static void VerifyRetargetedClip(GameObject target, AnimationClip source, AnimationClip output, RigEvidence rig, ClipReport report)
+    {
+        int repairs;
+        var samplingSource = CreateTransformSamplingClip(source, out repairs);
+        source = samplingSource;
+        var scene = EditorSceneManager.NewPreviewScene();
+        GameObject reference = null, actual = null;
+        try
+        {
+            reference = new GameObject("UnmodifiedMotionReference");
+            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(reference, scene);
+            var nodes = new Dictionary<string, Transform>();
+            foreach (var node in rig.nodes.OrderBy(n => n.path.Count(c => c == '/')).ThenBy(n => n.path.Length))
+            {
+                var t = node.path.Length == 0 ? reference.transform : new GameObject(node.path.Split('/').Last()).transform;
+                if (node.path.Length > 0) t.SetParent(nodes[node.parent ?? ""], false);
+                t.localPosition = node.serializedPosition; t.localRotation = node.serializedRotation; t.localScale = node.serializedScale;
+                nodes.Add(node.path, t);
+            }
+            actual = UnityEngine.Object.Instantiate(target);
+            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(actual, scene);
+            foreach (var animator in actual.GetComponentsInChildren<Animator>(true)) UnityEngine.Object.DestroyImmediate(animator);
+            foreach (var behaviour in actual.GetComponentsInChildren<MonoBehaviour>(true)) behaviour.enabled = false;
+            var targets = actual.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, actual.transform));
+            var rest = nodes.Values.Concat(targets.Values).Select(t => (t, t.localPosition, t.localRotation, t.localScale)).ToArray();
+            string worst = "";
+            for (int frame = 0; frame < 25; frame++)
+            {
+                foreach (var p in rest) { p.t.localPosition = p.localPosition; p.t.localRotation = p.localRotation; p.t.localScale = p.localScale; }
+                float time = source.length * frame / 24;
+                source.SampleAnimation(reference, time); output.SampleAnimation(actual, time);
+                foreach (string path in report.worldBodyPaths)
+                {
+                    float error = Quaternion.Angle(nodes[path].rotation, targets[MatchPath(path, targets.Keys)].rotation);
+                    if (!Finite(error)) throw new Exception("主体姿态核对出现非法旋转：" + path);
+                    if (error > report.retargetMaxRotationError) { report.retargetMaxRotationError = error; worst = path; }
+                }
+            }
+            if (report.retargetMaxRotationError > .25f)
+                throw new Exception("共享动作生成后的主体姿态与源动画不一致，已停止输出：" + worst + " / " + report.retargetMaxRotationError.ToString("F3") + "°");
+            report.retargetPoseChecked = true;
+        }
+        finally
+        {
+            if (reference) UnityEngine.Object.DestroyImmediate(reference);
+            if (actual) UnityEngine.Object.DestroyImmediate(actual);
+            EditorSceneManager.ClosePreviewScene(scene);
+            UnityEngine.Object.DestroyImmediate(samplingSource);
         }
     }
 

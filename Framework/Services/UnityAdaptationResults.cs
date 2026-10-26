@@ -89,6 +89,10 @@ public static class UnityAdaptationResults
                         || row.Decision is not ("retain" or "omit") || row.Reason.Length == 0)
                     || clip.Tracks.Select(row => (row.SourcePath, row.Property, row.Component)).Distinct().Count() != clip.Tracks.Count)
                     throw new InvalidDataException("逐轨道审计不完整、重复或与当前动画不符，不能标记为已核对。");
+                if (!clip.Humanoid && config.Clips.Single(input => input.Id == clip.Id).SourceRig.Length > 0
+                    && (!clip.RetargetPoseChecked || !float.IsFinite(clip.RetargetMaxRotationError) || clip.RetargetMaxRotationError > .25f
+                        || clip.RetargetMode != "body-world-orientation-and-local-bind-offsets" || clip.WorldBodyPaths.Count < 15))
+                    throw new InvalidDataException("共享动作缺少生成后的主体姿态核对，不能标记为适配成功。请重新生成独立适配包。");
             }
         }
         bool preview = config.Preview?.Enabled == true;
@@ -184,7 +188,7 @@ public static class UnityAdaptationResults
         public List<Clip> Clips { get; init; } = [];
     }
     private sealed record Input(string Path, string Sha256);
-    private sealed record Clip(string Id, string Name, string Source);
+    private sealed record Clip(string Id, string Name, string Source, string SourceRig = "");
     private sealed record PreviewOptions(bool Enabled);
     private sealed record NativeReport
     {
@@ -211,6 +215,10 @@ public static class UnityAdaptationResults
         public int SourceBindings { get; init; }
         public int SourceObjectBindings { get; init; }
         public int RetainedBindings { get; init; }
+        public bool RetargetPoseChecked { get; init; }
+        public float RetargetMaxRotationError { get; init; }
+        public string RetargetMode { get; init; } = "";
+        public List<string> WorldBodyPaths { get; init; } = [];
         public List<NativeTrack> Tracks { get; init; } = [];
         public bool Adapted { get; init; }
         public bool Humanoid { get; init; }
