@@ -168,6 +168,8 @@ public sealed record BundleObjectRow
     public int RendererCount { get; init; }
     public int BoneReferenceCount { get; init; }
     public int HierarchyNodes { get; init; }
+    public string? RigEvidencePath { get; init; }
+    public string? RigEvidenceSha256 { get; init; }
     public override string ToString() => $"{Name} [{PathId}]";
 }
 
@@ -181,6 +183,7 @@ public sealed record ObjectInventory
 
 public sealed record AnimationPreparationOptions
 {
+    public string SourceRigKey { get; init; } = "";
     public decimal ModelImportScale { get; init; } = 1;
     public decimal PositionScale { get; init; } = 1;
     public bool DropUnmatched { get; init; }

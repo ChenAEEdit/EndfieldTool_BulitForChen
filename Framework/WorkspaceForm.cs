@@ -47,7 +47,7 @@ internal sealed partial class WorkspaceForm : Form
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 动画播放修复 0.11.1";
+        Text = "终末地角色工作台 · 源骨架与轨道诊断 0.12.0";
         Font = new Font("Microsoft YaHei UI", 10);
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96, 96);

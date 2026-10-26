@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>EndfieldChenTool</AssemblyName>
-    <Version>0.11.1</Version>
-    <InformationalVersion>0.11.1-preview-playback</InformationalVersion>
+    <Version>0.12.0</Version>
+    <InformationalVersion>0.12.0-shared-rig-audit</InformationalVersion>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <DefaultItemExcludes>$(DefaultItemExcludes);templates/**;runtime/**;licenses/**;sources/**;Crypto/**</DefaultItemExcludes>
   </PropertyGroup>

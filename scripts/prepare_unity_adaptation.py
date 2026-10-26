@@ -30,6 +30,7 @@ def prepare_unity_package(state, selection, model, clips):
     target = package / asset_root
     (target / "Model").mkdir(parents=True)
     (target / "Sources").mkdir()
+    (target / 'Evidence').mkdir()
     inputs = []
 
     def copy(source, relative):
@@ -52,9 +53,29 @@ def prepare_unity_package(state, selection, model, clips):
         row = by_identity[identity]
         relative = "Sources/" + row["key"] + ".anim"
         copy(exported["output"], relative)
-        definitions.append({"id": row["key"], "name": row["name"], "source": relative})
+        definition = {"id": row["key"], "name": row["name"], "source": relative}
+        if exported.get('path_evidence'):
+            evidence = json.loads(Path(exported['path_evidence']).read_text(encoding='utf-8-sig'))
+            audit_relative = 'Evidence/' + row['key'] + '.paths.json'
+            copy(exported['path_evidence'], audit_relative)
+            definition['pathEvidence'] = audit_relative
+            key = rules.get('sourceRigKey', '')
+            if key:
+                candidates = [rig for rig in evidence['rigs'] if rig['key'] == key]
+                require(len(candidates) == 1, '所选动作原骨架不属于当前解析快照，请重新解析并选择。')
+                rig = candidates[0]
+                # The user chooses between real candidates. Coverage is reported,
+                # not used to pick an arbitrary tied rest pose automatically.
+                require(rig['matchedPaths'] > 1, '所选源骨架无法解释本动画的Transform路径。')
+                source_relative = 'Evidence/rig-' + key + '.json'
+                if not (target / source_relative).exists():
+                    copy(rig['file'], source_relative)
+                definition['sourceRig'] = source_relative
+        elif rules.get('sourceRigKey'):
+            require(False, '旧对象解析结果缺少源骨架证据，请重新解析。')
+        definitions.append(definition)
     config = {"schema": "endfield-unity-adaptation-config-v1", "taskId": state["result"]["taskId"],
-        "runId": state["result"]["runId"], "adapterVersion": "0.11.1", "modelKey": model["key"],
+        "runId": state["result"]["runId"], "adapterVersion": "0.12.0", "modelKey": model["key"],
         "model": "Model/" + Path(model_report["fbx"]).relative_to(run / "exports/model").as_posix(),
         "modelImportScale": rules["modelImportScale"],
         "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes")},

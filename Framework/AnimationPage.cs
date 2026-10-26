@@ -8,6 +8,7 @@ internal sealed partial class WorkspaceForm
 {
     private readonly NumericUpDown modelImportScale = ScaleInput();
     private readonly NumericUpDown animationPositionScale = ScaleInput();
+    private readonly ComboBox sourceRigChoice = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DropDownWidth = 900 };
     private readonly TextBox normalizeRoot = new() { Dock = DockStyle.Fill, PlaceholderText = "可选，例如 Root；将该节点的位置减去首帧偏移" };
     private readonly TextBox excludedDescendants = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical };
     private readonly TextBox excludedNodes = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical };
@@ -16,6 +17,7 @@ internal sealed partial class WorkspaceForm
     private readonly CheckBox forceLoop = new() { Text = "强制循环（未勾选时沿用源动画设置）", AutoSize = true };
     private readonly CheckBox createPreviewScene = new() { Text = "生成可切换、暂停和重播的独立预览场景", Checked = true, AutoSize = true };
     private readonly TextBox adaptationDetails = ReadOnlyText();
+    private readonly TrackAuditPanel trackAudit = new();
     private readonly Label adaptationHint = Note("");
 
     private readonly Button retryConverted = new() { Text = "仅用已转换项重新生成", Dock = DockStyle.Fill, Height = 36, Enabled = false };
@@ -48,17 +50,18 @@ internal sealed partial class WorkspaceForm
         foreach (Control action in resultActions.Controls) objectActions.Add(action);
         layout.Controls.Add(resultActions, 0, 2);
         var advanced = Grid(1, 3);
-        advanced.RowStyles.Add(new(SizeType.Absolute, 240));
+        advanced.RowStyles.Add(new(SizeType.Absolute, 278));
         advanced.RowStyles.Add(new(SizeType.Absolute, 100));
         advanced.RowStyles.Add(new(SizeType.Percent, 100));
-        var settings = Grid(2, 5);
+        var settings = Grid(2, 6);
         settings.ColumnStyles.Add(new(SizeType.Absolute, 110)); settings.ColumnStyles.Add(new(SizeType.Percent, 100));
-        foreach (var height in new[] { 34, 34, 38, 67, 67 }) settings.RowStyles.Add(new(SizeType.Absolute, height));
+        foreach (var height in new[] { 34, 34, 38, 67, 67, 38 }) settings.RowStyles.Add(new(SizeType.Absolute, height));
         settings.Controls.Add(Note("模型倍率"), 0, 0); settings.Controls.Add(modelImportScale, 1, 0);
         settings.Controls.Add(Note("位置倍率"), 0, 1); settings.Controls.Add(animationPositionScale, 1, 1);
         settings.Controls.Add(Note("位移归零节点"), 0, 2); settings.Controls.Add(normalizeRoot, 1, 2);
         settings.Controls.Add(Note("排除后代路径"), 0, 3); settings.Controls.Add(excludedDescendants, 1, 3);
         settings.Controls.Add(Note("排除节点路径"), 0, 4); settings.Controls.Add(excludedNodes, 1, 4);
+        settings.Controls.Add(Note("动作原骨架"), 0, 5); settings.Controls.Add(sourceRigChoice, 1, 5);
         advanced.Controls.Add(settings, 0, 0);
         var flags = Flow(); flags.Controls.AddRange([dropUnmatched, dropSceneTranslation, forceLoop, createPreviewScene]);
         advanced.Controls.Add(flags, 0, 1);
@@ -85,7 +88,10 @@ internal sealed partial class WorkspaceForm
         advanced.Controls.Add(actions, 0, 2);
         var advancedPreview = Collapsible("高级：单位、骨骼规则与单步执行", advanced, 470, limitHeight: false);
         layout.Controls.Add(advancedPreview, 0, 3);
-        layout.Controls.Add(adaptationDetails, 0, 4);
+        var resultTabs = new TabControl { Dock = DockStyle.Fill };
+        var resultPage = new TabPage("结果"); resultPage.Controls.Add(adaptationDetails);
+        var auditPage = new TabPage("轨道明细"); auditPage.Controls.Add(trackAudit);
+        resultTabs.TabPages.AddRange([resultPage, auditPage]); layout.Controls.Add(resultTabs, 0, 4);
         retryConverted.Click += async (_, _) => await RetryConvertedAsync();
         objectActions.Add(retryConverted); layout.Controls.Add(retryConverted, 0, 5);
         previewPane.Controls.Add(ScrollableWorkflow(layout, advancedPreview));
@@ -115,6 +121,7 @@ internal sealed partial class WorkspaceForm
 
     private void ShowPreviewFailure(SavedPlan saved, Exception error)
     {
+        trackAudit.LoadAudit(saved);
         retryConverted.Enabled = false;
         adaptationDetails.Text = "未完成：" + error.Message;
         try
@@ -143,6 +150,13 @@ internal sealed partial class WorkspaceForm
             if (model == 0 || avatar == 0) throw new InvalidDataException("原包模型或骨架不在当前对象列表中。");
             modelChoice.SelectedIndex = model; avatarChoice.SelectedIndex = avatar;
             var options = selection.Adaptation;
+            sourceRigChoice.SelectedIndex = 0;
+            if (options.SourceRigKey.Length > 0)
+            {
+                int source = Enumerable.Range(1, sourceRigChoice.Items.Count - 1).FirstOrDefault(i => (sourceRigChoice.Items[i] as ObjectChoice)?.Row?.Key == options.SourceRigKey);
+                if (source == 0) throw new InvalidDataException("原动作骨架不在当前快照中，不能更改原规则重试。");
+                sourceRigChoice.SelectedIndex = source;
+            }
             modelImportScale.Value = options.ModelImportScale; animationPositionScale.Value = options.PositionScale;
             normalizeRoot.Text = options.NormalizeRoot; excludedDescendants.Lines = options.ExcludedDescendants.ToArray(); excludedNodes.Lines = options.ExcludedNodes.ToArray();
             dropUnmatched.Checked = options.DropUnmatched; dropSceneTranslation.Checked = options.DropSceneTranslation;
@@ -170,6 +184,7 @@ internal sealed partial class WorkspaceForm
 
     private AnimationPreparationOptions AdaptationOptions() => new()
     {
+        SourceRigKey = (sourceRigChoice.SelectedItem as ObjectChoice)?.Row?.Key ?? "",
         ModelImportScale = modelImportScale.Value, PositionScale = animationPositionScale.Value,
         DropUnmatched = dropUnmatched.Checked, DropSceneTranslation = dropSceneTranslation.Checked, ForceLoop = forceLoop.Checked,
         CreatePreviewScene = createPreviewScene.Checked,
@@ -218,6 +233,7 @@ internal sealed partial class WorkspaceForm
             else result = await UnityAdaptationResults.ImportAsync(inventoryTask, cancellation.Token);
             scanProgress.Value = 100;
             adaptationDetails.Text = PreviewResultText(inventoryTask, result) + (openMessage == null ? "" : "\r\n\r\n" + openMessage);
+            trackAudit.LoadAudit(inventoryTask);
             status.Text = openMessage ?? result.Message;
             foreach (ListViewItem row in tasks.Items)
                 if (((SavedPlan)row.Tag!).Plan.Id == inventoryTask.Plan.Id) row.SubItems[2].Text = ObjectStatus(result.Status);

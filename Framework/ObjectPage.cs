@@ -123,6 +123,7 @@ internal sealed partial class WorkspaceForm
         if (bundles?.Status != "bundles_extracted" || bundles.RunId != result.BundleRunId)
             throw new InvalidDataException("Bundle 提取记录已变化，请重新解析对象。");
         LoadObjects(saved, result.InventoryPath);
+        trackAudit.LoadAudit(saved);
         objectDetails.Text = DescribeObjectResult(result);
         retryConverted.Enabled = false;
         try
@@ -140,10 +141,12 @@ internal sealed partial class WorkspaceForm
         inventoryTask = saved; objectInventory = loaded; objectInventoryPath = path;
         checkedClips.Clear();
         modelChoice.Items.Clear(); avatarChoice.Items.Clear();
+        sourceRigChoice.Items.Clear(); sourceRigChoice.Items.Add(new ObjectChoice(null, "直接绑定（专属动画）；跨角色请选择有证据的动作原骨架")); sourceRigChoice.SelectedIndex = 0;
         modelChoice.Items.Add(new ObjectChoice(null, "不导出模型"));
         avatarChoice.Items.Add(new ObjectChoice(null, "不指定 Avatar"));
         foreach (var row in loaded.Objects.Where(row => row.IsModelCandidate)) modelChoice.Items.Add(new ObjectChoice(row));
         foreach (var row in loaded.Objects.Where(row => row.Kind == "Avatar")) avatarChoice.Items.Add(new ObjectChoice(row));
+        foreach (var row in loaded.Objects.Where(row => row.IsModelCandidate && row.HierarchyNodes >= 15 && row.RigEvidencePath != null)) sourceRigChoice.Items.Add(new ObjectChoice(row));
         modelChoice.SelectedIndex = avatarChoice.SelectedIndex = 0;
         var preferred = loaded.Objects.Where(row => row.IsModelCandidate
             && (row.PathId == saved.Plan.RootPathId || row.Name == saved.Plan.RootName)).ToList();
@@ -263,6 +266,7 @@ internal sealed partial class WorkspaceForm
                 var outcome = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, cancellation.Token);
                 result = outcome.Result;
                 adaptationDetails.Text = PreviewResultText(saved, result);
+                trackAudit.LoadAudit(saved);
                 status.Text = result.Message;
             }
         }

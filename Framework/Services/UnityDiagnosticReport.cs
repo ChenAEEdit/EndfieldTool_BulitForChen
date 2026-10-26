@@ -6,12 +6,24 @@ namespace EndfieldChenTool.Framework.Services;
 
 public static class UnityDiagnosticReport
 {
+    internal static JsonElement ReadVerifiedReport(SavedPlan saved)
+    {
+        saved = UnityTaskTarget.Resolve(saved);
+        var result = UnityAdaptationResults.ValidatePreparation(saved);
+        string config = UnityProjectFiles.Within(saved.Plan.Options.UnityProject, result.UnityAssetRoot + "/adaptation.json");
+        string file = UnityProjectFiles.Within(saved.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated/adaptation-result.json");
+        var report = JsonFiles.Read<JsonElement>(file);
+        if (UnityProjectFiles.Hash(config, CancellationToken.None) != result.UnityConfigSha256 || report.GetProperty("schema").GetString() != "endfield-unity-adaptation-v1"
+            || report.GetProperty("taskId").GetString() != saved.Plan.Id.ToString() || report.GetProperty("runId").GetString() != result.RunId
+            || report.GetProperty("configSha256").GetString() != result.UnityConfigSha256) throw new InvalidDataException("轨道报告不属于当前任务和配置。");
+        return report;
+    }
     public static string Export(SavedPlan saved)
     {
         saved = UnityTaskTarget.Resolve(saved);
         var result = UnityAdaptationResults.ValidatePreparation(saved);
         string path = UnityProjectFiles.Within(saved.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated/adaptation-result.json");
-        var report = JsonFiles.Read<JsonElement>(path);
+        var report = ReadVerifiedReport(saved);
         if (report.GetProperty("taskId").GetString() != saved.Plan.Id.ToString() || report.GetProperty("runId").GetString() != result.RunId
             || report.GetProperty("configSha256").GetString() != result.UnityConfigSha256) throw new InvalidDataException("诊断报告来源不符。");
         var text = new StringBuilder("# Unity 动画适配诊断\n\n");
@@ -37,6 +49,17 @@ public static class UnityDiagnosticReport
                     + " | " + Value(clip, "movingBodyRotationChannels") + " | " + Value(clip, "retainedBindings") + " | "
                     + (clip.TryGetProperty("unmatched", out var unknown) ? unknown.GetArrayLength() : 0) + " | "
                     + Escape(Value(clip, "adapted") + " " + Value(clip, "error")) + " |");
+        text.AppendLine("\n## 未输出的具体轨道\n\n逐条保留完整源路径、属性和原因；片段失败时，拟保留的轨道也没有生成输出。全部对应记录可在工作台“轨道明细”页取消“只看未输出”查看。\n");
+        foreach (var clip in report.GetProperty("clips").EnumerateArray())
+        {
+            text.AppendLine("\n### " + Escape(Value(clip, "name")) + "\n\n源骨架：" + Escape(Value(clip, "sourceRigName")) + "；换算：" + Escape(Value(clip, "retargetMode")) + "；生成：" + Value(clip, "adapted") + "。\n");
+            if (!clip.TryGetProperty("tracks", out var tracks)) { text.AppendLine("旧版本没有逐轨道记录。\n"); continue; }
+            bool adapted = clip.GetProperty("adapted").GetBoolean();
+            text.AppendLine("| 源哈希 | 源路径 | 属性／组件 | 目标路径 | 处理计划 | 原因 |\n| --- | --- | --- | --- | --- | --- |");
+            foreach (var row in tracks.EnumerateArray().Where(t => !adapted || Value(t, "decision") != "retain"))
+                text.AppendLine("| " + Value(row, "sourceHash") + " | " + Escape(Value(row, "sourcePath")) + " | " + Escape(Value(row, "property") + " / " + Value(row, "component"))
+                    + " | " + Escape(Value(row, "targetPath")) + " | " + Value(row, "decision") + " | " + Escape(TrackAuditPanel.Reason(Value(row, "reason"))) + " |");
+        }
         text.AppendLine("\n## 基础预览材质\n\n| 材质 | 已绑定基础贴图 | 贴图 |\n| --- | --- | --- |");
         if (report.TryGetProperty("materials", out var materials) && materials.ValueKind == JsonValueKind.Array)
             foreach (var material in materials.EnumerateArray())

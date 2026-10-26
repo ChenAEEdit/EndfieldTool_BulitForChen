@@ -93,6 +93,14 @@ def inspect_bundles(bundle_result, plan_bytes):
     require(code == 0 and report.is_file(), "Bundle 对象解析失败，请查看本次日志。")
     inventory = read(report)
     require(inventory.get("schema") == "endfield-object-inventory-v1" and inventory.get("objects"), "没有解析到可列出的对象。")
+    from source_rig_discovery import add_source_rig_inputs
+    discovery = add_source_rig_inputs(json.loads(plan_bytes.decode('utf-8-sig')), bundle_result, inventory, run, inputs, copied, read)
+    if discovery['addedFiles']:
+        emit('重新解析包含源骨架证据的完整快照…', 38)
+        code = run_tool("runtime/object-probe/BundleObjectProbe.exe", ["--input", inputs, "--report", report])
+        require(code == 0, '源骨架补充快照解析失败。')
+        inventory = read(report)
+    inventory['sourceRigDiscovery'] = discovery
     keys = [row["key"] for row in inventory["objects"]]
     require(len(keys) == len(set(keys)), "对象标识重复，无法精确选择。")
     inventory.update(taskId=STATE["result"]["taskId"], runId=STATE["result"]["runId"],
@@ -100,6 +108,8 @@ def inspect_bundles(bundle_result, plan_bytes):
     for row in inventory["objects"]:
         if row.get("avatarTosPath"):
             row["avatarTosSha256"] = digest(checked_path(row["avatarTosPath"], run))
+        if row.get('rigEvidencePath'):
+            row['rigEvidenceSha256'] = digest(checked_path(row['rigEvidencePath'], run))
     checked_inputs(inventory)
     write_json(report, inventory)
     STATE["result"].update(status="inspected", inventoryPath=str(report),
@@ -161,7 +171,7 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
         clip_selection = STATE["run"] / "clips.json"
         write_json(clip_selection, clips)
         arguments = ["--input", inputs, "--output", output / "animations", "--name-contains", "",
-                     "--selection", clip_selection, "--report", report]
+                     "--selection", clip_selection, "--report", report, "--rig-catalog", inventory_path]
         if avatar:
             tos = checked_path(avatar["avatarTosPath"], inventory_path.parent)
             require(digest(tos) == avatar["avatarTosSha256"], "Avatar 路径表已变化，请重新解析对象。")
@@ -179,8 +189,12 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
             if re.search(r"(?m)^        value:.*(?:NaN|Infinity|∞|\.nan|\.inf)", yaml):
                 failures.append("动画包含非有限关键帧值：" + row["m_Name"]); continue
             register_output(path, "AnimationSource", curves=row["curves"], keys=row["keys"], unknownPaths=row["unknown_paths"])
+            if row.get('path_evidence'):
+                register_output(row['path_evidence'], 'AnimationPathEvidence')
             if row["unknown_paths"]:
                 STATE["result"]["warnings"].append(row["m_Name"] + " 尚有未解析路径，不能直接用于播放。")
+        for path in (output / 'animations').glob('rig-*.json'):
+            register_output(path, 'SourceRigEvidence')
     checked_inputs(inventory)
     STATE["result"].update(status="partial" if failures else "exported_unverified", inventoryPath=str(inventory_path),
         message="导出结束；模型与原始动画尚未进行 Unity 适配或播放验证。")

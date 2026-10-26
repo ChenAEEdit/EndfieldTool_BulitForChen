@@ -22,7 +22,57 @@ var progress = new InlineProgress<ExtractionProgress>(p => {
 string statePath = Path.Combine(reports, "target-state.json");
 try
 {
-    if (args[3] == "target")
+    if (args[3] is "rig-prepare" or "rig-reprepare" or "rig-reinspect")
+    {
+        string baseline = Path.Combine(Path.GetDirectoryName(reports)!, "remaining_acceptance_20261026");
+        var state = JsonFiles.Read<TargetState>(Path.Combine(baseline, "target-state.json"));
+        var prior = new SavedPlan(state.First, JsonFiles.Read<ExtractionPlan>(state.First));
+        var saved = args[3] != "rig-prepare"
+            ? new SavedPlan(File.ReadAllText(Path.Combine(reports, "rig-prepare-plan.txt")).Trim(), JsonFiles.Read<ExtractionPlan>(File.ReadAllText(Path.Combine(reports, "rig-prepare-plan.txt")).Trim()))
+            : new WorkspaceStore().Save(prior.Plan with { Id = Guid.NewGuid(), Options = prior.Plan.Options with { WorkspaceDirectory = Path.Combine(reports, "workspace"), UnityProject = state.ProjectB } });
+        File.WriteAllText(Path.Combine(reports, "rig-prepare-plan.txt"), saved.FilePath);
+        ObjectOperationResult inspected;
+        if (args[3] == "rig-reprepare") inspected = ObjectWorkflow.ReadResult(saved)!;
+        else if (args[3] == "rig-reinspect") inspected = await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
+        else
+        {
+        foreach (var file in BundleExtractionBackend.ReadResult(prior)!.Files)
+        {
+            string destination = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "bundles", file.Group, Path.GetFileName(file.Path));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!); File.Copy(file.Path, destination, false);
+        }
+        await new BundleExtractionBackend().ExecuteAsync(saved, progress, deadline.Token);
+        inspected = await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
+        }
+        var inventory = ObjectWorkflow.ReadInventory(saved, inspected.InventoryPath!);
+        var target = inventory.Objects.Single(o => o.IsModelCandidate && o.PathId == prior.Plan.RootPathId);
+        var sourceRig = inventory.Objects.Single(o => o.IsModelCandidate && o.Name == "SK_actor_female" && Path.GetFileName(o.SourceBundle) == "7cde33b2f3a520fa070d2454.ab");
+        var clip = inventory.Objects.Single(o => o.Kind == "AnimationClip" && o.Name == "female_walk" && Path.GetFileName(o.SourceBundle) == "883c322914dd6cf6f62424d8.ab");
+        var prepared = await new ObjectWorkflow().ExecuteAsync(saved, "prepare", inspected.InventoryPath, new ObjectExportSelection(target.Key, target.LinkedAvatarKey, [clip.Key],
+            new AnimationPreparationOptions { ModelImportScale = 100, SourceRigKey = sourceRig.Key, DropUnmatched = true }), progress, deadline.Token);
+        var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
+        JsonFiles.Write(Path.Combine(reports, "rig-prepare-generation.json"), new { passed = generated.Result.Adapted, target, sourceRig, clip, prepared, generated, saved.FilePath });
+    }
+    else if (args[3] == "rig-generate")
+    {
+        string path = File.ReadAllText(Path.Combine(reports, "rig-prepare-plan.txt")).Trim();
+        var saved = new SavedPlan(path, JsonFiles.Read<ExtractionPlan>(path));
+        var prepared = ObjectWorkflow.ReadPreparation(saved)!;
+        var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
+        JsonFiles.Write(Path.Combine(reports, "rig-prepare-generation.json"), new { passed = generated.Result.Adapted, prepared, generated, saved.FilePath });
+    }
+    else if (args[3] == "source-rig")
+    {
+        var catalog = new JsonCatalogProvider().Load(Path.Combine(reports, "source-rig-catalog.json"));
+        var actor = catalog.Characters.Single();
+        var plan = new TaskPlanner().Create(catalog, actor, actor.Resources.Select(r => r.Id).ToArray(), original.Plan.Options with { WorkspaceDirectory = Path.Combine(reports, "rig-workspace") });
+        var saved = new WorkspaceStore().Save(plan);
+        File.WriteAllText(Path.Combine(reports, "source-rig-plan.txt"), saved.FilePath);
+        await new BundleExtractionBackend().ExecuteAsync(saved, progress, deadline.Token);
+        var result = await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
+        JsonFiles.Write(Path.Combine(reports, "source-rig-inventory.json"), ObjectWorkflow.ReadInventory(saved, result.InventoryPath!));
+    }
+    else if (args[3] == "target")
     {
         string projectB = @"D:\AAAChatGPT\UnityValidation\剩余验收 B 20261026";
         if (!Directory.Exists(projectB))

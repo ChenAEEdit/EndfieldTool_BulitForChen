@@ -77,6 +77,18 @@ public static class UnityAdaptationResults
             || expectedInvocationId != null && report.InvocationId != expectedInvocationId
             || report.Clips.Count != result.ExpectedAdaptedClips || report.Clips.Any(row => !row.Adapted))
             throw new InvalidDataException("Unity 适配未完成，或结果不属于本次适配包；请查看 Unity 报告。");
+        if (config.AdapterVersion == "0.12.0")
+        {
+            foreach (var clip in report.Clips)
+            {
+                if (clip.TrackAuditVersion != 1 || !config.Clips.Any(input => input.Id == clip.Id && input.Name == clip.Name)
+                    || clip.Tracks.Count < clip.SourceBindings || clip.Tracks.Count(row => row.Decision == "retain") != clip.RetainedBindings
+                    || clip.Tracks.Any(row => !uint.TryParse(row.SourceHash, out _) || string.IsNullOrEmpty(row.Property) || string.IsNullOrEmpty(row.Component)
+                        || row.Decision is not ("retain" or "omit") || row.Reason.Length == 0)
+                    || clip.Tracks.Select(row => (row.SourcePath, row.Property, row.Component)).Distinct().Count() != clip.Tracks.Count)
+                    throw new InvalidDataException("逐轨道审计不完整、重复或与当前动画不符，不能标记为已核对。");
+            }
+        }
         bool preview = config.Preview?.Enabled == true;
         if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) + report.Materials.Count + (string.IsNullOrEmpty(report.HumanAvatar) ? 0 : 1) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
             throw new InvalidDataException("Unity 适配输出不完整或重复。");
@@ -116,7 +128,7 @@ public static class UnityAdaptationResults
                 || Path.GetExtension(path) != ".mat" || !outputPaths.Contains(path) || !materialPaths.Add(path))
                 throw new InvalidDataException("生成的预览材质路径无效或重复。");
         }
-        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1")
+        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0")
         {
             var metadata = inputPaths.Concat(outputPaths).Concat(new[] {
                 UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs"),
@@ -183,11 +195,25 @@ public static class UnityAdaptationResults
     }
     private sealed record NativeClip
     {
+        public string Id { get; init; } = "";
+        public int TrackAuditVersion { get; init; }
+        public int SourceBindings { get; init; }
+        public int RetainedBindings { get; init; }
+        public List<NativeTrack> Tracks { get; init; } = [];
         public bool Adapted { get; init; }
         public bool Humanoid { get; init; }
         public string Name { get; init; } = "";
         public string Output { get; init; } = "";
         public string State { get; init; } = "";
+    }
+    private sealed record NativeTrack
+    {
+        public string SourceHash { get; init; } = "";
+        public string SourcePath { get; init; } = "";
+        public string Property { get; init; } = "";
+        public string Component { get; init; } = "";
+        public string Decision { get; init; } = "";
+        public string Reason { get; init; } = "";
     }
     private sealed record NativeMaterial { public string Output { get; init; } = ""; }
 }

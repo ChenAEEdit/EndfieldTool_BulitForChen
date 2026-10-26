@@ -23,7 +23,7 @@ foreach (var item in all)
     string key = Key(item);
     int renderers = 0, bones = 0, nodes = 0;
     bool candidate = false;
-    string? linkedAvatar = null, tos = null;
+    string? linkedAvatar = null, tos = null, rig = null;
     if (item is GameObject gameObject)
     {
         bool root = gameObject.m_Transform != null && !gameObject.m_Transform.m_Father.TryGet(out _);
@@ -49,6 +49,11 @@ foreach (var item in all)
             candidate = renderers > 0 || gameObject.m_Animator != null;
         }
         if (gameObject.m_Animator != null && gameObject.m_Animator.m_Avatar.TryGet(out var avatar)) linkedAvatar = Key(avatar);
+        if (candidate)
+        {
+            rig = Path.Combine(output, "rig-" + key + ".json");
+            RigEvidenceWriter.Write(gameObject, key, linkedAvatar, rig, Key);
+        }
     }
     if (item is Avatar sourceAvatar)
     {
@@ -59,7 +64,9 @@ foreach (var item in all)
     rows.Add(new { key, kind, name = item.Name ?? "", pathId = item.m_PathID.ToString(),
         sourceAsset = item.assetsFile.fileName, sourceBundle = item.assetsFile.originalPath,
         isModelCandidate = candidate, rendererCount = renderers, boneReferenceCount = bones,
-        hierarchyNodes = nodes, linkedAvatarKey = linkedAvatar, avatarTosPath = tos });
+        hierarchyNodes = nodes, linkedAvatarKey = linkedAvatar, avatarTosPath = tos, rigEvidencePath = rig,
+        bindingPathHashes = item is AnimationClip sourceClip ? sourceClip.m_ClipBindingConstant?.genericBindings?
+            .Where(binding => binding.typeID == ClassIDType.Transform).Select(binding => binding.path).Distinct().Order().ToArray() ?? [] : Array.Empty<uint>() });
 }
 File.WriteAllText(reportPath, JsonSerializer.Serialize(new { schema = "endfield-object-inventory-v1", input,
     objectCount = all.Length, loadedAssets = manager.assetsFileList.Count, objects = rows,

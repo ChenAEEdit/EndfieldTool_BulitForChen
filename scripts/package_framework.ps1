@@ -107,8 +107,11 @@ foreach ($runtimeName in $exporterBuilds.Keys) {
     foreach ($file in @('Program.cs', ($projectName + '.csproj'))) {
         Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\exporters\' + $projectName + '\' + $file)) -Destination (Join-Path $exporterSource $file) -Force
     }
+    if ($projectName -eq 'BundleObjectProbe') {
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'sources/exporters/BundleObjectProbe/RigEvidenceWriter.cs') -Destination $exporterSource -Force
+    }
 }
-foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py', 'object_pipeline.py', 'prepare_unity_adaptation.py', 'verify_object_export_files.py')) {
+foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py', 'object_pipeline.py', 'source_rig_discovery.py', 'prepare_unity_adaptation.py', 'verify_object_export_files.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $packageRoot ('scripts\' + $file)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'profiles\known_builds.json') -Destination (Join-Path $packageRoot 'profiles\known_builds.json') -Force
@@ -164,6 +167,6 @@ foreach ($name in @('Program.cs', 'WorkspaceUiVerification.csproj')) {
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.11.1-preview-playback'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.12.0-shared-rig-audit'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

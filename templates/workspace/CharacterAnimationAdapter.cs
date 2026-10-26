@@ -22,7 +22,7 @@ public static class CharacterAnimationAdapter
         public string[] excludedNodes = new string[0];
     }
     [Serializable] public class InputFile { public string path, sha256; }
-    [Serializable] public class ClipInput { public string id, name, source; }
+    [Serializable] public class ClipInput { public string id, name, source, sourceRig = "", pathEvidence = ""; }
     [Serializable] public class Preview { public bool enabled; }
     [Serializable] public class Config
     {
@@ -35,12 +35,46 @@ public static class CharacterAnimationAdapter
     }
     [Serializable] public class ClipReport
     {
-        public string name, output, error, state;
+        public string id, name, output, error, state;
+        public int trackAuditVersion = 1;
         public int sourceBindings, retainedBindings, skippedAnimator, skippedOther, droppedSceneTranslation,
             remappedBindings, excludedBindings, repairedTangents;
         public bool adapted, humanoid;
         public int movingMuscles, movingBodyRotationChannels;
         public string[] unmatched = new string[0];
+        public List<TrackAudit> tracks = new List<TrackAudit>();
+        public string sourceRigKey = "", sourceRigName = "", retargetMode = "direct";
+        public int retargetedPositionTracks, retargetedRotationTracks, retargetedScaleTracks;
+        public float rotationSampleRate;
+        public List<string> sourceRestMissing = new List<string>();
+        public List<string> worldBodyPaths = new List<string>();
+    }
+    [Serializable] public class TrackAudit
+    {
+        public string sourcePath, targetPath = "", property, component, decision = "not-evaluated", reason = "";
+        public string sourceHash = "", conversion = "none";
+        public int keys, outputKeys;
+    }
+    [Serializable] public class RigNode { public string path, parent, reference; public Vector3 position, scale, serializedPosition, serializedScale; public Quaternion rotation, serializedRotation; }
+    [Serializable] public class RigEvidence { public string schema, key, name, restPoseKind; public RigNode[] nodes; public string[] bodyBoneNames = new string[0]; }
+    [Serializable] class PathEvidenceRow { public string hash = "", path = "", status = ""; }
+    [Serializable] class PathEvidenceFile { public string schema = ""; public PathEvidenceRow[] paths = new PathEvidenceRow[0]; }
+    static void CompleteTrackEvidence(ClipReport report, PathEvidenceFile evidence)
+    {
+        foreach (var row in report.tracks)
+        {
+            uint hash;
+            if (!(row.sourcePath.StartsWith("path_", StringComparison.Ordinal) && uint.TryParse(row.sourcePath.Substring(5), out hash)))
+            {
+                hash = 0xffffffff;
+                foreach (byte value in System.Text.Encoding.UTF8.GetBytes(row.sourcePath))
+                { hash ^= value; for (int i = 0; i < 8; i++) hash = (hash >> 1) ^ ((hash & 1) != 0 ? 0xedb88320u : 0); }
+                hash ^= 0xffffffff;
+            }
+            row.sourceHash = hash.ToString();
+            var original = evidence?.paths?.FirstOrDefault(p => p.hash == row.sourceHash);
+            if (row.reason == "unresolved-source-hash" && original != null && original.status == "ambiguous-source-hash") row.reason = original.status;
+        }
     }
     [Serializable] public class OutputFile { public string path, sha256; public long bytes; }
     [Serializable] public class MaterialMetadata { public MaterialDescription[] materials; }
@@ -195,7 +229,7 @@ public static class CharacterAnimationAdapter
         }
         if (report.clips.Any(item => item.humanoid) && (report.humanAvatar != generated + "/CharacterHumanAvatar.asset" || !outputs.Contains(report.humanAvatar)))
             throw new Exception("人形动画缺少配套 Avatar，请保留原包并重新生成。");
-        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1")
+        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0")
         {
             var expected = new HashSet<string>(config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs)
                 .Concat(new[] { "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs", "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs" })
@@ -297,8 +331,15 @@ public static class CharacterAnimationAdapter
         return matches.Length == 1 ? matches[0] : null;
     }
 
-    public static AnimationClip CreateDirectClip(GameObject target, AnimationClip source, Rules rules, ClipReport report, bool humanoid = false)
+    public static AnimationClip CreateDirectClip(GameObject target, AnimationClip source, Rules rules, ClipReport report, bool humanoid = false, RigEvidence sourceRig = null)
     {
+        var sourceBindings = AnimationUtility.GetCurveBindings(source);
+        report.sourceBindings = sourceBindings.Length;
+        report.tracks = sourceBindings.Select(binding => new TrackAudit { sourcePath = binding.path, property = binding.propertyName,
+            component = binding.type.FullName, keys = AnimationUtility.GetEditorCurve(source, binding)?.length ?? 0 }).ToList();
+        foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(source))
+            report.tracks.Add(new TrackAudit { sourcePath = binding.path, property = binding.propertyName, component = binding.type.FullName,
+                keys = AnimationUtility.GetObjectReferenceCurve(source, binding).Length, decision = "omit", reason = "unsupported-object-reference-track" });
         if (!(rules.positionScale > 0) || !Finite(rules.positionScale)) throw new Exception("动画位置倍率无效。");
         var transforms = target.GetComponentsInChildren<Transform>(true);
         var paths = transforms.Select(t => AnimationUtility.CalculateTransformPath(t, target.transform)).ToArray();
@@ -313,23 +354,37 @@ public static class CharacterAnimationAdapter
         var bindings = new List<EditorCurveBinding>();
         var curves = new List<AnimationCurve>();
         var clip = new AnimationClip { name = source.name + "_Direct", frameRate = source.frameRate, legacy = false };
+        AnimationClip convertedSource = null;
         try
         {
-            foreach (var binding in AnimationUtility.GetCurveBindings(source))
+            if (sourceRig != null && !humanoid) convertedSource = RetargetSourcePose(target, source, sourceRig, report);
+            for (int bindingIndex = 0; bindingIndex < sourceBindings.Length; bindingIndex++)
             {
-                report.sourceBindings++;
+                var binding = sourceBindings[bindingIndex];
+                var audit = report.tracks[bindingIndex];
                 bool muscleBinding = binding.type == typeof(Animator);
-                if (muscleBinding && !humanoid) { report.skippedAnimator++; continue; }
-                if (binding.type != typeof(Transform) && !muscleBinding) { report.skippedOther++; continue; }
+                if (muscleBinding && !humanoid) { report.skippedAnimator++; audit.decision = "omit"; audit.reason = "animator-track-in-generic-mode"; continue; }
+                if (binding.type != typeof(Transform) && !muscleBinding) { report.skippedOther++; audit.decision = "omit"; audit.reason = "unsupported-component-track"; continue; }
                 bool position = binding.propertyName.StartsWith("m_LocalPosition.", StringComparison.Ordinal);
                 if (rules.dropSceneTranslation && position && string.IsNullOrEmpty(binding.path))
-                { report.droppedSceneTranslation++; continue; }
+                { report.droppedSceneTranslation++; audit.decision = "omit"; audit.reason = "scene-translation-disabled"; continue; }
                 var mapped = muscleBinding ? "" : MatchPath(binding.path, paths);
-                if (mapped == null) { missing.Add(binding.path); continue; }
+                if (convertedSource && report.sourceRestMissing.Contains(binding.path))
+                {
+                    missing.Add(binding.path); audit.decision = rules.dropUnmatched ? "omit" : "reject"; audit.reason = "missing-source-rest-pose"; continue;
+                }
+                if (mapped == null)
+                {
+                    missing.Add(binding.path); audit.decision = rules.dropUnmatched ? "omit" : "reject";
+                    audit.reason = binding.path.StartsWith("path_", StringComparison.Ordinal) ? "unresolved-source-hash"
+                        : paths.Count(path => path.EndsWith("/" + binding.path, StringComparison.Ordinal) || binding.path.EndsWith("/" + path, StringComparison.Ordinal) && path.Length > 0) > 1 ? "ambiguous-target-path" : "missing-target-node";
+                    continue;
+                }
+                audit.targetPath = mapped;
                 // Excluding a head's descendants preserves the head rotation itself.
                 if (exactExclusions.Contains(mapped) || exclusions.Any(prefix => mapped.StartsWith(prefix + "/", StringComparison.Ordinal)))
-                { report.excludedBindings++; continue; }
-                var original = AnimationUtility.GetEditorCurve(source, binding);
+                { report.excludedBindings++; audit.decision = "omit"; audit.reason = exactExclusions.Contains(mapped) ? "user-excluded-node" : "user-excluded-descendant"; continue; }
+                var original = AnimationUtility.GetEditorCurve(convertedSource ? convertedSource : source, binding);
                 if (original == null || original.length == 0) throw new Exception("源动画存在空曲线：" + binding.path);
                 var curve = new AnimationCurve(original.keys) { preWrapMode = original.preWrapMode, postWrapMode = original.postWrapMode };
                 var keys = curve.keys;
@@ -354,8 +409,13 @@ public static class CharacterAnimationAdapter
                 var remapped = binding; remapped.path = mapped;
                 if (mapped != binding.path) report.remappedBindings++;
                 if (bindings.Any(previous => previous.path == remapped.path && previous.propertyName == remapped.propertyName))
+                {
+                    audit.decision = "reject"; audit.reason = "multiple-source-tracks-to-one-target";
                     throw new Exception("多条源轨道映射到同一目标：" + mapped + " / " + remapped.propertyName);
+                }
                 bindings.Add(remapped); curves.Add(curve);
+                audit.decision = "retain"; audit.reason = mapped == binding.path ? "exact-path" : "unique-suffix-path";
+                audit.outputKeys = curve.length; audit.conversion = convertedSource ? report.worldBodyPaths.Contains(binding.path) ? "body-world-orientation" : "source-bind-relative" : "direct";
             }
             report.unmatched = missing.OrderBy(path => path, StringComparer.Ordinal).ToArray();
             if (missing.Count > 0 && !rules.dropUnmatched) throw new Exception("存在未匹配或不唯一的路径；请核对报告，或明确选择忽略未匹配轨道。");
@@ -370,6 +430,196 @@ public static class CharacterAnimationAdapter
             return clip;
         }
         catch { UnityEngine.Object.DestroyImmediate(clip); throw; }
+        finally { if (convertedSource) UnityEngine.Object.DestroyImmediate(convertedSource); }
+    }
+
+    // Explicit local-rest retargeting. It preserves destination bone offsets and
+    // converts the source motion delta; it does not recreate game IK/correctives.
+    public static AnimationClip RetargetSourcePose(GameObject target, AnimationClip source, RigEvidence rig, ClipReport report)
+    {
+        if (rig.schema != "endfield-rig-evidence-v1" || rig.nodes == null || rig.nodes.Length == 0 || rig.restPoseKind != "skin-bind-matrices-with-per-node-provenance")
+            throw new Exception("动作原骨架缺少真实绑定矩阵及姿态来源，请重新解析对象。");
+        var nodes = rig.nodes.ToDictionary(node => node.path, StringComparer.Ordinal);
+        var targets = target.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, target.transform));
+        var converted = UnityEngine.Object.Instantiate(source);
+        try
+        {
+            report.sourceRigKey = rig.key; report.sourceRigName = rig.name; report.retargetMode = "source-local-rest-relative";
+            foreach (var group in AnimationUtility.GetCurveBindings(source).Where(b => b.type == typeof(Transform)).GroupBy(b => b.path))
+            {
+                string mapped = MatchPath(group.Key, targets.Keys);
+                RigNode node;
+                if (mapped == null) continue;
+                if (!nodes.TryGetValue(group.Key, out node)
+                    || node.reference != "skin-bind-pose" && node.reference != "rig-root-reference")
+                { report.sourceRestMissing.Add(group.Key); continue; }
+                var destination = targets[mapped];
+                string targetParent = destination == target.transform ? null : AnimationUtility.CalculateTransformPath(destination.parent, target.transform);
+                bool prefixedRoot = node.parent == "" && group.Key.Length > 0 && !group.Key.Contains("/") && mapped.EndsWith("/" + group.Key, StringComparison.Ordinal);
+                bool virtualRoot = group.Key.Length == 0 && mapped.Length == 0;
+                if (!virtualRoot && node.parent != null && !prefixedRoot && MatchPath(node.parent, targets.Keys) != targetParent) throw new Exception("源骨架与目标的父子关系不一致，不能按本地姿态换算：" + group.Key);
+                if (!Finite(node.position.x) || !Finite(node.position.y) || !Finite(node.position.z) || !Finite(node.scale.x) || !Finite(node.scale.y) || !Finite(node.scale.z)
+                    || !Finite(node.rotation.x) || !Finite(node.rotation.y) || !Finite(node.rotation.z) || !Finite(node.rotation.w) || Quaternion.Dot(node.rotation, node.rotation) < .000001f)
+                    throw new Exception("源骨架静态姿态包含非法数值：" + group.Key);
+                foreach (var binding in group.Where(b => b.propertyName.StartsWith("m_LocalPosition.") || b.propertyName.StartsWith("m_LocalScale.")))
+                {
+                    var input = AnimationUtility.GetEditorCurve(source, binding);
+                    int axis = "xyz".IndexOf(binding.propertyName.Last());
+                    if (axis < 0 || input == null) throw new Exception("源位置或缩放曲线无效。");
+                    bool position = binding.propertyName.StartsWith("m_LocalPosition.");
+                    float offset = position ? destination.localPosition[axis] - node.position[axis] : 0;
+                    float ratio = 1;
+                    if (!position)
+                    {
+                        if (Math.Abs(node.scale[axis]) < .000001f) throw new Exception("源静态缩放为零，无法可靠换算：" + group.Key);
+                        ratio = destination.localScale[axis] / node.scale[axis];
+                    }
+                    var keys = input.keys;
+                    for (int i = 0; i < keys.Length; i++) { keys[i].value = keys[i].value * ratio + offset; keys[i].inTangent *= ratio; keys[i].outTangent *= ratio; }
+                    AnimationUtility.SetEditorCurve(converted, binding, new AnimationCurve(keys) { preWrapMode = input.preWrapMode, postWrapMode = input.postWrapMode });
+                    if (position) report.retargetedPositionTracks++; else report.retargetedScaleTracks++;
+                }
+                var rotations = group.Where(b => b.propertyName.StartsWith("m_LocalRotation.")).OrderBy(b => "xyzw".IndexOf(b.propertyName.Last())).ToArray();
+                var offsetRotation = destination.localRotation * Quaternion.Inverse(node.rotation.normalized);
+                if (group.Any(b => b.propertyName.Contains("Euler")) && Quaternion.Angle(offsetRotation, Quaternion.identity) > .001f)
+                    throw new Exception("此源骨架姿态换算不支持欧拉旋转轨道，请保留源文件并检查：" + group.Key);
+                if (rotations.Length == 0 || Quaternion.Angle(offsetRotation, Quaternion.identity) < .001f) continue;
+                if (rotations.Length != 4) throw new Exception("源四元数轨道不完整，不能可靠换算：" + group.Key);
+                var inputs = rotations.Select(b => AnimationUtility.GetEditorCurve(source, b)).ToArray();
+                float rate = Mathf.Clamp(Mathf.Max(60, source.frameRate), 60, 120);
+                int frames = Mathf.CeilToInt(source.length * rate);
+                if (frames > 500000) throw new Exception("姿态换算采样超过上限。");
+                var times = new SortedSet<float>(inputs.SelectMany(c => c.keys).Select(k => k.time));
+                for (int i = 0; i <= frames; i++) times.Add(Mathf.Min(source.length, i / rate));
+                var baked = Enumerable.Range(0, 4).Select(_ => new List<Keyframe>()).ToArray();
+                Quaternion previous = Quaternion.identity; bool first = true;
+                foreach (float time in times)
+                {
+                    var rotation = offsetRotation * new Quaternion(inputs[0].Evaluate(time), inputs[1].Evaluate(time), inputs[2].Evaluate(time), inputs[3].Evaluate(time)).normalized;
+                    if (!first && Quaternion.Dot(previous, rotation) < 0) rotation = new Quaternion(-rotation.x, -rotation.y, -rotation.z, -rotation.w);
+                    first = false; previous = rotation;
+                    for (int axis = 0; axis < 4; axis++) baked[axis].Add(new Keyframe(time, rotation[axis]));
+                }
+                for (int axis = 0; axis < 4; axis++)
+                {
+                    var keys = baked[axis].ToArray();
+                    for (int i = 0; i < keys.Length; i++)
+                    {
+                        keys[i].inTangent = i == 0 ? 0 : (keys[i].value - keys[i - 1].value) / (keys[i].time - keys[i - 1].time);
+                        keys[i].outTangent = i + 1 == keys.Length ? 0 : (keys[i + 1].value - keys[i].value) / (keys[i + 1].time - keys[i].time);
+                    }
+                    AnimationUtility.SetEditorCurve(converted, rotations[axis], new AnimationCurve(keys));
+                }
+                report.retargetedRotationTracks += 4; report.rotationSampleRate = rate;
+            }
+            RetargetBodyWorld(target, source, converted, rig, report);
+            return converted;
+        }
+        catch { UnityEngine.Object.DestroyImmediate(converted); throw; }
+    }
+
+    static void RetargetBodyWorld(GameObject target, AnimationClip source, AnimationClip converted, RigEvidence rig, ClipReport report)
+    {
+        if (rig.bodyBoneNames == null || rig.bodyBoneNames.Length < 15) throw new Exception("源姿态换算缺少可核对的人形骨骼名称映射。");
+        GameObject virtualSource = null, virtualTarget = null; AnimationClip sampleTarget = null;
+        var scene = EditorSceneManager.NewPreviewScene();
+        try
+        {
+            virtualSource = new GameObject("SourceRigReference");
+            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(virtualSource, scene);
+            var sourceTransforms = new Dictionary<string, Transform>();
+            foreach (var node in rig.nodes.OrderBy(n => n.path.Count(c => c == '/')).ThenBy(n => n.path.Length))
+            {
+                var item = node.path.Length == 0 ? virtualSource.transform : new GameObject(node.path.Split('/').Last()).transform;
+                if (node.path.Length > 0) item.SetParent(sourceTransforms[node.parent ?? ""], false);
+                item.localPosition = node.serializedPosition; item.localRotation = node.serializedRotation; item.localScale = node.serializedScale;
+                sourceTransforms.Add(node.path, item);
+            }
+            virtualTarget = UnityEngine.Object.Instantiate(target);
+            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(virtualTarget, scene);
+            foreach (var animator in virtualTarget.GetComponentsInChildren<Animator>(true)) animator.enabled = false;
+            foreach (var behaviour in virtualTarget.GetComponentsInChildren<MonoBehaviour>(true)) behaviour.enabled = false;
+            var targets = virtualTarget.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, virtualTarget.transform));
+            var rawBindings = AnimationUtility.GetCurveBindings(source);
+            var body = new List<(string path, Transform source, Transform target, EditorCurveBinding[] bindings)>();
+            foreach (var name in rig.bodyBoneNames)
+            {
+                var sourceNodes = sourceTransforms.Where(p => p.Value.name == name).ToArray();
+                if (sourceNodes.Length != 1) throw new Exception("源人形骨骼名称缺失或重名：" + name);
+                string path = sourceNodes[0].Key, mapped = MatchPath(path, targets.Keys);
+                if (mapped == null) throw new Exception("目标缺少源人形骨骼：" + path);
+                var bindings = rawBindings.Where(b => b.type == typeof(Transform) && b.path == path && b.propertyName.StartsWith("m_LocalRotation.")).OrderBy(b => "xyzw".IndexOf(b.propertyName.Last())).ToArray();
+                if (bindings.Length == 0) continue;
+                if (bindings.Length != 4) throw new Exception("主体四元数轨道不完整：" + path);
+                // Check semantic body children, excluding character-specific facial
+                // and corrective nodes whose positions do not establish a body axis.
+                var children = sourceTransforms.Where(p => p.Value.parent == sourceNodes[0].Value
+                        && rig.bodyBoneNames.Contains(p.Value.name) && p.Value.localPosition.sqrMagnitude > .00000001f)
+                    .Select(p => new { source = p.Value, targetPath = MatchPath(p.Key, targets.Keys) }).Where(p => p.targetPath != null)
+                    .OrderByDescending(p => p.source.localPosition.sqrMagnitude).ToArray();
+                if (children.Any(p => Vector3.Angle(p.source.localPosition, targets[p.targetPath].localPosition) > 5))
+                    throw new Exception("对应骨骼的本地骨轴不同，需要显式坐标映射：" + path);
+                body.Add((path, sourceNodes[0].Value, targets[mapped], bindings));
+            }
+            body = body.OrderBy(p => p.path.Count(c => c == '/')).ToList();
+            if (body.Count < 15) throw new Exception("不足15条完整主体旋转，不能可靠换算共享动作。");
+            sampleTarget = UnityEngine.Object.Instantiate(converted);
+            var sampleBindings = AnimationUtility.GetCurveBindings(sampleTarget);
+            var remapped = new List<EditorCurveBinding>(); var curves = new List<AnimationCurve>();
+            foreach (var binding in sampleBindings)
+            {
+                string path = MatchPath(binding.path, targets.Keys);
+                if (path == null) continue;
+                var mapped = binding; mapped.path = path;
+                remapped.Add(mapped); curves.Add(AnimationUtility.GetEditorCurve(sampleTarget, binding));
+            }
+            AnimationUtility.SetEditorCurves(sampleTarget, sampleBindings, sampleBindings.Select(_ => (AnimationCurve)null).ToArray());
+            AnimationUtility.SetEditorCurves(sampleTarget, remapped.ToArray(), curves.ToArray());
+            var sourceRest = sourceTransforms.Values.Select(t => (t, t.localPosition, t.localRotation, t.localScale)).ToArray();
+            var targetRest = targets.Values.Select(t => (t, t.localPosition, t.localRotation, t.localScale)).ToArray();
+            float rate = Mathf.Clamp(Mathf.Max(60, source.frameRate), 60, 120);
+            int frames = Mathf.CeilToInt(source.length * rate);
+            if (frames > 500000) throw new Exception("主体姿态换算采样超过上限。");
+            var values = body.Select(_ => Enumerable.Range(0, 4).Select(__ => new List<Keyframe>()).ToArray()).ToArray();
+            var previous = body.Select(_ => Quaternion.identity).ToArray();
+            for (int frame = 0; frame <= frames; frame++)
+            {
+                float time = Mathf.Min(source.length, frame / rate);
+                foreach (var p in sourceRest) { p.t.localPosition = p.localPosition; p.t.localRotation = p.localRotation; p.t.localScale = p.localScale; }
+                foreach (var p in targetRest) { p.t.localPosition = p.localPosition; p.t.localRotation = p.localRotation; p.t.localScale = p.localScale; }
+                source.SampleAnimation(virtualSource, time); sampleTarget.SampleAnimation(virtualTarget, time);
+                for (int i = 0; i < body.Count; i++)
+                {
+                    body[i].target.rotation = body[i].source.rotation;
+                    var q = body[i].target.localRotation.normalized;
+                    if (frame > 0 && Quaternion.Dot(previous[i], q) < 0) q = new Quaternion(-q.x, -q.y, -q.z, -q.w);
+                    previous[i] = q;
+                    for (int axis = 0; axis < 4; axis++) values[i][axis].Add(new Keyframe(time, q[axis]));
+                }
+            }
+            for (int i = 0; i < body.Count; i++)
+            {
+                report.worldBodyPaths.Add(body[i].path);
+                for (int axis = 0; axis < 4; axis++)
+                {
+                    var keys = values[i][axis].ToArray();
+                    for (int k = 0; k < keys.Length; k++)
+                    {
+                        keys[k].inTangent = k == 0 ? 0 : (keys[k].value - keys[k - 1].value) / (keys[k].time - keys[k - 1].time);
+                        keys[k].outTangent = k + 1 == keys.Length ? 0 : (keys[k + 1].value - keys[k].value) / (keys[k + 1].time - keys[k].time);
+                    }
+                    AnimationUtility.SetEditorCurve(converted, body[i].bindings[axis], new AnimationCurve(keys));
+                }
+            }
+            report.retargetMode = "body-world-orientation-and-local-bind-offsets"; report.rotationSampleRate = rate;
+        }
+        finally
+        {
+            if (sampleTarget) UnityEngine.Object.DestroyImmediate(sampleTarget);
+            if (virtualSource) UnityEngine.Object.DestroyImmediate(virtualSource);
+            if (virtualTarget) UnityEngine.Object.DestroyImmediate(virtualTarget);
+            EditorSceneManager.ClosePreviewScene(scene);
+        }
     }
 
     static bool NeedsHumanMotion(AnimationClip source, ClipReport report)
@@ -391,7 +641,7 @@ public static class CharacterAnimationAdapter
     [Serializable] class HumanMappingBone { public string m_BoneName = "", m_HumanName = ""; }
     [Serializable] class HumanMappingCandidate { public string name = "", sourceAsset = "", sourceBundle = "", pathId = ""; public HumanMappingBone[] bones = new HumanMappingBone[0]; }
     [Serializable] class HumanMappings { public string schema = ""; public HumanMappingCandidate[] candidates = new HumanMappingCandidate[0]; }
-    static Avatar BuildHumanAvatar(GameObject root, string basePath, out string mappingSource)
+    static HumanMappingCandidate SelectHumanMapping(GameObject root, string basePath)
     {
         string file = basePath + "/Model/avatar_human_candidates.json";
         if (!File.Exists(file)) throw new Exception("此动画需要 Humanoid 主体通道。请使用新版工具重新生成包含真实人形映射的包。");
@@ -406,7 +656,12 @@ public static class CharacterAnimationAdapter
         var distinct = candidates.GroupBy(candidate => string.Join("|", candidate.bones.OrderBy(bone => bone.m_HumanName)
             .Select(bone => bone.m_HumanName + "=" + bone.m_BoneName))).ToArray();
         if (distinct.Length != 1) throw new Exception("没有唯一且完整匹配模型的源人形映射，不能猜测 Humanoid 骨架。");
-        var selected = distinct[0].First();
+        return distinct[0].First();
+    }
+    static Avatar BuildHumanAvatar(GameObject root, string basePath, out string mappingSource)
+    {
+        var selected = SelectHumanMapping(root, basePath);
+        var transforms = root.GetComponentsInChildren<Transform>(true);
         var human = new HumanDescription {
             human = selected.bones.Select(bone => new HumanBone { boneName = bone.m_BoneName, humanName = bone.m_HumanName, limit = new HumanLimit { useDefaultValues = true } }).ToArray(),
             skeleton = transforms.Select(item => new SkeletonBone { name = item.name, position = item.localPosition, rotation = item.localRotation, scale = item.localScale }).ToArray(),
@@ -471,13 +726,28 @@ public static class CharacterAnimationAdapter
             var controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath); outputs.Add(controllerPath);
             foreach (var input in config.clips)
             {
-                var item = new ClipReport { name = input.name }; details.Add(item);
+                var item = new ClipReport { id = input.id, name = input.name }; details.Add(item);
+                PathEvidenceFile evidence = null;
                 try
                 {
+                    foreach (string metadata in new[] { input.pathEvidence, input.sourceRig }.Where(path => !string.IsNullOrEmpty(path)))
+                        if (!config.inputs.Any(file => file.path == metadata)) throw new Exception("源骨架或路径证据未包含在摘要清单中。");
+                    if (!string.IsNullOrEmpty(input.pathEvidence))
+                    {
+                        evidence = JsonUtility.FromJson<PathEvidenceFile>(File.ReadAllText(Local(basePath, input.pathEvidence)));
+                        if (evidence.schema != "endfield-animation-path-evidence-v1") throw new Exception("动画路径证据格式无效。");
+                    }
+                    var sourceRig = string.IsNullOrEmpty(input.sourceRig) ? null : JsonUtility.FromJson<RigEvidence>(File.ReadAllText(Local(basePath, input.sourceRig)));
                     var source = AssetDatabase.LoadAssetAtPath<AnimationClip>(Local(basePath, input.source));
                     if (!source) throw new Exception("源动画未导入。");
                     if (string.IsNullOrEmpty(input.id) || input.id.Any(character => !Uri.IsHexDigit(character))) throw new Exception("片段标识无效。");
                     item.humanoid = NeedsHumanMotion(source, item);
+                    if (sourceRig != null && !item.humanoid)
+                    {
+                        var mapping = SelectHumanMapping(root, basePath);
+                        sourceRig.bodyBoneNames = mapping.bones.Where(b => b.m_HumanName != "LeftEye" && b.m_HumanName != "RightEye" && b.m_HumanName != "Jaw")
+                            .Select(b => b.m_BoneName).ToArray();
+                    }
                     if (item.humanoid && !humanAvatar)
                     {
                         string mappingSource;
@@ -486,7 +756,7 @@ public static class CharacterAnimationAdapter
                         report.humanAvatar = generated + "/CharacterHumanAvatar.asset";
                         AssetDatabase.CreateAsset(humanAvatar, report.humanAvatar); outputs.Add(report.humanAvatar);
                     }
-                    var clip = CreateDirectClip(root, source, config.rules, item, item.humanoid); clip.name = input.name;
+                    var clip = CreateDirectClip(root, source, config.rules, item, item.humanoid, sourceRig); clip.name = input.name;
                     item.output = generated + "/Clip_" + input.id + ".anim";
                     AssetDatabase.CreateAsset(clip, item.output); outputs.Add(item.output);
                     string stateName = "Clip_" + input.id;
@@ -497,6 +767,7 @@ public static class CharacterAnimationAdapter
                     item.adapted = true;
                 }
                 catch (Exception error) { item.error = error.Message; }
+                finally { CompleteTrackEvidence(item, evidence); }
             }
             var animator = root.GetComponent<Animator>() ?? root.AddComponent<Animator>();
             animator.avatar = details.Count > 0 && details[0].humanoid ? humanAvatar : avatar;
@@ -518,7 +789,7 @@ public static class CharacterAnimationAdapter
             report.status = report.adapted ? "adapted_unverified" : "partial";
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             report.outputs = outputs.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
-            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1")
+            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0")
             {
                 var metadataPaths = config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs).Concat(new[] {
                     "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs",

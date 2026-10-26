@@ -131,10 +131,11 @@ if (!listOnly && selected is not null)
 {
     Directory.CreateDirectory(output);
     var safeRootName = SafeName(selected.Root.m_Name);
+    if (safeRootName.Length > 80) safeRootName = safeRootName[..80];
     fbxPath = Path.Combine(output, $"{safeRootName}_{selected.Root.m_PathID}.fbx");
     try
     {
-        ModelExporter.ExportFbx(fbxPath, selected.Converter!, new Fbx.ExportOptions
+        ExportFbxStaged(fbxPath, selected.Converter!, new Fbx.ExportOptions
         {
             eulerFilter = false,
             filterPrecision = 0.25f,
@@ -231,6 +232,7 @@ var report = new
     material_reference_audit = selected is null ? null : DescribeMaterialReferenceAudit(selected.Root),
     candidates = probes.Select(DescribeProbe).ToArray(),
     fbx = fbxPath,
+    fbx_export_transport = "short-owned-temp-directory-and-sha256-verified-copy",
     fbx_bytes = fbxPath is not null && File.Exists(fbxPath) ? new FileInfo(fbxPath).Length : 0,
     material_report = materialReportPath,
     material_properties_report = materialPropertyReportPath,
@@ -252,6 +254,45 @@ if (exportError is not null)
     return 1;
 }
 return selected is null ? 1 : 0;
+
+static void ExportFbxStaged(string target, IImported imported, Fbx.ExportOptions exportOptions)
+{
+    // FBXWrapper changes the process working directory. Windows limits this API
+    // even when managed file IO supports the long destination path.
+    string tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar);
+    string stage = Path.GetFullPath(Path.Combine(tempRoot, "EndfieldFbx-" + Guid.NewGuid().ToString("N")));
+    if (!stage.StartsWith(tempRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+        || Path.GetFileName(stage).Length != "EndfieldFbx-".Length + 32 || stage.Length > 180 || Directory.Exists(stage))
+        throw new IOException("无法建立独立的短路径 FBX 临时目录，请检查系统临时目录设置。");
+    string previousDirectory = Environment.CurrentDirectory;
+    Directory.CreateDirectory(stage);
+    try
+    {
+        try { ModelExporter.ExportFbx(Path.Combine(stage, Path.GetFileName(target)), imported, exportOptions); }
+        finally { Environment.CurrentDirectory = previousDirectory; }
+        string destinationRoot = Path.GetFullPath(Path.GetDirectoryName(target)!);
+        Directory.CreateDirectory(destinationRoot);
+        foreach (string source in Directory.EnumerateFiles(stage, "*", SearchOption.AllDirectories))
+        {
+            string destination = Path.GetFullPath(Path.Combine(destinationRoot, Path.GetRelativePath(stage, source)));
+            if (!destination.StartsWith(destinationRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new IOException("FBX 输出超出目标目录。");
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(source, destination, true);
+            using var original = File.OpenRead(source); using var copied = File.OpenRead(destination);
+            if (!System.Security.Cryptography.SHA256.HashData(original).SequenceEqual(System.Security.Cryptography.SHA256.HashData(copied)))
+                throw new IOException("FBX 或贴图复制摘要不一致：" + destination);
+        }
+        if (!File.Exists(target) || new FileInfo(target).Length == 0) throw new IOException("底层 FBX 导出没有生成有效模型。");
+    }
+    finally
+    {
+        // Only the exact, newly created GUID directory above can be removed.
+        string verifiedStage = Path.GetFullPath(stage);
+        if (verifiedStage != stage || !verifiedStage.StartsWith(tempRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("FBX 临时目录归属校验失败，已停止清理。");
+        Directory.Delete(verifiedStage, recursive: true);
+    }
+}
 
 static ModelConverter.Options CreateConverterOptions(Game game) => new()
 {
