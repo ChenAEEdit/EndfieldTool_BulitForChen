@@ -759,7 +759,16 @@ internal sealed partial class WorkspaceForm : Form
     private static Label Note(string text) => new() { Text = text, Dock = DockStyle.Fill, Padding = new Padding(0, 6, 0, 0), AutoEllipsis = true };
     private static TextBox ReadOnlyText() => new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
         ScrollBars = ScrollBars.Vertical, BackColor = Color.FromArgb(247, 249, 251), BorderStyle = BorderStyle.FixedSingle };
-    private static TableLayoutPanel Grid(int columns, int rows) => new() { Dock = DockStyle.Fill, ColumnCount = columns, RowCount = rows, Margin = Padding.Empty };
+    private static TableLayoutPanel Grid(int columns, int rows)
+    {
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = columns, RowCount = rows, Margin = Padding.Empty };
+        // Implicit AutoSize cells can grow beyond the parent at higher DPI.
+        // Single-axis containers fill their allocated area; inner workflows
+        // provide the scrolling needed for content larger than that area.
+        if (columns == 1) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        if (rows == 1) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        return grid;
+    }
     private static FlowLayoutPanel Flow() => new() { Dock = DockStyle.Fill, WrapContents = true, AutoScroll = true, Margin = Padding.Empty };
     private static Button ActionButton(string text, Action action)
     {

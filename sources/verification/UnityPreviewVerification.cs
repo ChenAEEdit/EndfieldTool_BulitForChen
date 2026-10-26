@@ -19,12 +19,13 @@ public static class UnityPreviewVerification
         public bool passed, actualPlay, timeAdvanced, seek, restart;
         public bool pause, speed, switchClip;
         public bool savedPoseMatchesPrefab;
+        public bool sceneSaveReloadVerified, originalSceneUnchanged;
         public bool mouseInteractionTested = false;
         public int meshes, nonFiniteVertices;
         public float height, firstTime, lastTime;
         public List<ClipCheck> clips = new List<ClipCheck>();
     }
-    [Serializable] class ClipCheck { public string name; public float length, firstTime, lastTime, humanScale; public bool looping, timeAdvanced, human; public int movingTransforms, movingBodyBones; public string[] mainBoneMotions; }
+    [Serializable] class ClipCheck { public string name, bodyImage, faceImage, kneesImage; public float length, firstTime, lastTime, humanScale, rootWorldDisplacement; public bool looping, timeAdvanced, human, avatarMatches, runtimeLoopCrossed; public int movingTransforms, movingBodyBones; public string[] mainBoneMotions; }
     static Request request;
     static Result result;
     static CharacterPreviewControls controls;
@@ -35,12 +36,25 @@ public static class UnityPreviewVerification
     static int clipIndex;
     static double clipStarted;
     static float clipFirstTime;
+    static Vector3 clipRootPosition;
+    static bool loopChecked;
     static UnityPreviewVerification() { if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ENDFIELD_PREVIEW_CHECK"))) EditorApplication.update += Tick; }
     public static void Begin()
     {
         Load(); Directory.CreateDirectory(request.directory);
         SessionState.SetString("EndfieldPreviewCheck", request.invocation);
         EditorSceneManager.OpenScene(request.scene, OpenSceneMode.Single);
+        byte[] sceneBytes = File.ReadAllBytes(request.scene);
+        string copy = "Assets/EndfieldCharacterValidation/Reload_" + request.invocation + ".unity";
+        if (!EditorSceneManager.SaveScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene(), copy, true)) throw new Exception("Cannot save isolated scene copy");
+        EditorSceneManager.OpenScene(copy, OpenSceneMode.Single);
+        var roundTrip = GameObject.Find("Character");
+        bool reload = roundTrip && roundTrip.GetComponent<Animator>() && UnityEngine.Object.FindFirstObjectByType<CharacterPreviewControls>();
+        EditorSceneManager.OpenScene(request.scene, OpenSceneMode.Single);
+        AssetDatabase.DeleteAsset(copy);
+        bool unchanged = sceneBytes.SequenceEqual(File.ReadAllBytes(request.scene));
+        SessionState.SetBool("EndfieldReload." + request.invocation, reload);
+        SessionState.SetBool("EndfieldUnchanged." + request.invocation, unchanged);
         var root = GameObject.Find("Character");
         var source = PrefabUtility.GetCorrespondingObjectFromSource(root);
         var expected = source.GetComponentsInChildren<Transform>(true).ToDictionary(item => AnimationUtility.CalculateTransformPath(item, source.transform));
@@ -54,6 +68,7 @@ public static class UnityPreviewVerification
         });
         SessionState.SetBool("EndfieldPreviewPose." + request.invocation, rest);
         result.savedPoseMatchesPrefab = rest;
+        result.sceneSaveReloadVerified = reload; result.originalSceneUnchanged = unchanged;
         if (Environment.GetEnvironmentVariable("ENDFIELD_PREVIEW_USE_ENTRY") == "1")
             typeof(EndfieldCharacterWorkbench.Editor.CharacterAnimationAdapter).GetMethod("OpenRequestedPreview", BindingFlags.Public | BindingFlags.Static).Invoke(null, null);
         else EditorApplication.isPlaying = true;
@@ -62,7 +77,9 @@ public static class UnityPreviewVerification
     {
         request = JsonUtility.FromJson<Request>(File.ReadAllText(Environment.GetEnvironmentVariable("ENDFIELD_PREVIEW_CHECK")));
         result = new Result { invocation = request.invocation, scene = request.scene,
-            savedPoseMatchesPrefab = SessionState.GetBool("EndfieldPreviewPose." + request.invocation, false) };
+            savedPoseMatchesPrefab = SessionState.GetBool("EndfieldPreviewPose." + request.invocation, false),
+            sceneSaveReloadVerified = SessionState.GetBool("EndfieldReload." + request.invocation, false),
+            originalSceneUnchanged = SessionState.GetBool("EndfieldUnchanged." + request.invocation, false) };
     }
     static void Tick()
     {
@@ -107,6 +124,11 @@ public static class UnityPreviewVerification
             else if (phase == 3 && EditorApplication.timeSinceStartup - clipStarted > .3)
             {
                 var clip = controls.clips[clipIndex];
+                if (clip.isLooping && !loopChecked)
+                {
+                    controls.SetPaused(true); controls.SeekNormalized(.99f); controls.SetSpeed(2); controls.SetPaused(false);
+                    clipStarted = EditorApplication.timeSinceStartup; phase = 4; return;
+                }
                 float currentTime = controls.animator.GetCurrentAnimatorStateInfo(0).normalizedTime;
                 controls.SetPaused(true); controls.SeekNormalized(.1f);
                 var bones = controls.animator.GetComponentsInChildren<Transform>(true);
@@ -119,8 +141,15 @@ public static class UnityPreviewVerification
                 Geometry();
                 var main = Enumerable.Range(0, bones.Length).Where(i => new[] { "Bip001_L_Thigh", "Bip001_R_Thigh", "Bip001_L_UpperArm", "Bip001_R_UpperArm", "Bip001_Spine" }.Contains(bones[i].name)).ToArray();
                 var display = typeof(CharacterPreviewControls).GetMethod("DisplayName");
+                string bodyImage = "clip-" + clipIndex.ToString("D2") + "-body.png";
+                string faceImage = "clip-" + clipIndex.ToString("D2") + "-face.png";
+                string kneesImage = "clip-" + clipIndex.ToString("D2") + "-knees.png";
+                Capture(bodyImage, false); Capture(faceImage, true); Capture(kneesImage, false, true);
                 result.clips.Add(new ClipCheck { name = display == null ? clip.name : (string)display.Invoke(controls, new object[] { clipIndex }),
+                    bodyImage = bodyImage, faceImage = faceImage, kneesImage = kneesImage,
                     human = controls.animator.isHuman, humanScale = controls.animator.isHuman ? controls.animator.humanScale : 1,
+                    avatarMatches = controls.animator.avatar == controls.clipAvatars[clipIndex], runtimeLoopCrossed = loopChecked,
+                    rootWorldDisplacement = Vector3.Distance(clipRootPosition, controls.animator.transform.position),
                     movingBodyBones = main.Count(i => Quaternion.Angle(rotations[i], bones[i].localRotation) > .05f), length = clip.length, looping = clip.isLooping,
                     firstTime = clipFirstTime, lastTime = currentTime, timeAdvanced = currentTime > clipFirstTime + .001f, movingTransforms = moving,
                     mainBoneMotions = Enumerable.Range(0, bones.Length).Where(i => new[] { "Bip001_L_Thigh", "Bip001_R_Thigh", "Bip001_L_UpperArm", "Bip001_R_UpperArm", "Bip001_Spine" }.Contains(bones[i].name))
@@ -130,20 +159,26 @@ public static class UnityPreviewVerification
                 if (clipIndex < controls.clips.Length) BeginClipCheck();
                 else
                 {
-                    result.passed = result.actualPlay && result.savedPoseMatchesPrefab && result.timeAdvanced && result.seek && result.restart && result.pause && result.speed && result.switchClip && result.meshes > 0
+                    result.passed = result.actualPlay && result.sceneSaveReloadVerified && result.originalSceneUnchanged && result.savedPoseMatchesPrefab && result.timeAdvanced && result.seek && result.restart && result.pause && result.speed && (controls.clips.Length == 1 || result.switchClip) && result.meshes > 0
                         && result.nonFiniteVertices == 0 && result.height > .5f && result.height < 3
                         && result.clips.Count == controls.clips.Length && result.clips.All(item => item.timeAdvanced && item.length > 0 && item.movingTransforms > 0
+                            && item.avatarMatches && (!item.looping || item.runtimeLoopCrossed)
                             && (Environment.GetEnvironmentVariable("ENDFIELD_REQUIRE_MAIN_BODY") != "1" || item.movingBodyBones > 0));
                     Finish(result.passed ? 0 : 1);
                 }
             }
-            if (elapsed > 60) throw new Exception("Preview Play check timed out.");
+            else if (phase == 4 && controls.animator.GetCurrentAnimatorStateInfo(0).normalizedTime > 1.01f)
+            {
+                loopChecked = true; controls.SetSpeed(1); phase = 3; clipStarted = EditorApplication.timeSinceStartup - 1;
+            }
+            if (elapsed > 180) throw new Exception("Preview Play check timed out.");
         }
         catch (Exception error) { if (result == null) result = new Result(); result.error = error.ToString(); Finish(1); }
     }
     static void BeginClipCheck()
     {
         controls.SetSpeed(1); controls.SetPaused(false); controls.SelectClip(clipIndex);
+        loopChecked = false; clipRootPosition = controls.animator.transform.position;
         clipFirstTime = controls.animator.GetCurrentAnimatorStateInfo(0).normalizedTime;
         clipStarted = EditorApplication.timeSinceStartup;
     }
@@ -165,7 +200,7 @@ public static class UnityPreviewVerification
         result.height = bounds.size.y;
     }
     static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
-    static void Capture(string name, bool face)
+    static void Capture(string name, bool face, bool knees = false)
     {
         var camera = controls.previewCamera; var position = camera.transform.position; var rotation = camera.transform.rotation;
         var target = camera.targetTexture; var rect = camera.rect; var previous = RenderTexture.active;
@@ -176,6 +211,14 @@ public static class UnityPreviewVerification
             {
                 var head = controls.animator.GetComponentsInChildren<Transform>(true).First(item => item.name == "Bip001_Head");
                 camera.transform.position = head.position + Vector3.forward * .6f; camera.transform.LookAt(head.position);
+            }
+            else if (knees)
+            {
+                var bones = controls.animator.GetComponentsInChildren<Transform>(true);
+                var left = bones.First(item => item.name == "Bip001_L_Calf");
+                var right = bones.First(item => item.name == "Bip001_R_Calf");
+                var center = (left.position + right.position) * .5f;
+                camera.transform.position = center + Vector3.forward * .9f + Vector3.right * .12f; camera.transform.LookAt(center);
             }
             camera.targetTexture = texture; camera.rect = new Rect(0, 0, 1, 1); camera.Render(); RenderTexture.active = texture;
             picture.ReadPixels(new Rect(0, 0, 900, 1000), 0, 0); picture.Apply();

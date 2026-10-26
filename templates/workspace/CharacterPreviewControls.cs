@@ -6,6 +6,10 @@ namespace EndfieldCharacterWorkbench
 // Runtime controls only; no edit-mode animation sampling or global time changes.
 public sealed class CharacterPreviewControls : MonoBehaviour
 {
+#if UNITY_EDITOR
+    // Editor integration observers can locate the actual IMGUI controls.
+    public static event Action<string, Rect> GuiControlRendered;
+#endif
     public Animator animator;
     public Camera previewCamera;
     public AnimationClip[] clips = new AnimationClip[0];
@@ -132,46 +136,72 @@ public sealed class CharacterPreviewControls : MonoBehaviour
             GUILayout.Label((selected + 1) + " / " + clips.Length + "   " + DisplayName(selected));
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("上一个")) Select(selected - 1);
+            ReportControl("previous");
             if (GUILayout.Button(paused ? "继续" : "暂停")) SetPaused(!paused);
+            ReportControl("pause");
             if (GUILayout.Button("重播")) Restart();
+            ReportControl("restart");
             if (GUILayout.Button("下一个")) Select(selected + 1);
+            ReportControl("next");
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("速度 " + speed.ToString("0.00") + "×", GUILayout.Width(105));
             float nextSpeed = GUILayout.HorizontalSlider(speed, .1f, 2);
+            ReportControl("speed");
             if (!Mathf.Approximately(nextSpeed, speed)) SetSpeed(nextSpeed);
             GUILayout.EndHorizontal();
             float time = NormalizedTime();
             GUILayout.Label((time * clips[selected].length).ToString("0.00") + " / " + clips[selected].length.ToString("0.00") + " 秒"
                 + (clips[selected].isLooping ? "  循环" : "  单次"));
             float nextTime = GUILayout.HorizontalSlider(time, 0, 1);
+            ReportControl("time");
             if (!Mathf.Approximately(nextTime, time)) Seek(nextTime);
             GUILayout.BeginHorizontal();
             GUI.enabled = paused;
             float frame = 1 / (Mathf.Max(1, clips[selected].frameRate) * Mathf.Max(.001f, clips[selected].length));
             if (GUILayout.Button("上一帧")) Seek(time - frame);
+            ReportControl("frame-previous");
             if (GUILayout.Button("下一帧")) Seek(time + frame);
+            ReportControl("frame-next");
             GUI.enabled = previousEnabled;
             GUILayout.EndHorizontal();
 
             GUILayout.Label("动画列表");
             listScroll = GUILayout.BeginScrollView(listScroll, GUILayout.Height(Mathf.Clamp(Screen.height / scale - 480, 65, 185)));
             for (int i = 0; i < clips.Length; i++)
+            {
                 if (GUILayout.Button((i == selected ? "▶ " : "") + DisplayName(i))) Select(i);
+                ReportControl("clip-" + i);
+            }
             GUILayout.EndScrollView();
             GUILayout.Label("视角");
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("左转")) { yaw -= 20; UpdateCamera(); }
+            ReportControl("view-left");
             if (GUILayout.Button("右转")) { yaw += 20; UpdateCamera(); }
+            ReportControl("view-right");
             if (GUILayout.Button("拉近")) { zoom = Mathf.Max(.25f, zoom * .8f); UpdateCamera(); }
+            ReportControl("view-near");
             if (GUILayout.Button("拉远")) { zoom = Mathf.Min(5, zoom * 1.25f); UpdateCamera(); }
+            ReportControl("view-far");
             if (GUILayout.Button("复位")) { yaw = 0; pitch = 4; zoom = 1; UpdateCamera(); }
+            ReportControl("view-reset");
             GUILayout.EndHorizontal();
             GUILayout.Label("暂停后拖动进度或逐帧查看；关闭 Play 后恢复场景。\n该场景未复原游戏布料、IK 或专用着色器。");
             GUILayout.EndScrollView(); GUILayout.EndArea();
         }
         finally { GUI.matrix = previousMatrix; GUI.enabled = previousEnabled; }
+    }
+
+    static void ReportControl(string id)
+    {
+#if UNITY_EDITOR
+        if (Event.current.type != EventType.Repaint || GuiControlRendered == null) return;
+        Rect rect = GUILayoutUtility.GetLastRect();
+        Vector2 start = GUIUtility.GUIToScreenPoint(rect.min), end = GUIUtility.GUIToScreenPoint(rect.max);
+        GuiControlRendered(id, new Rect(start, end - start));
+#endif
     }
 }
 }

@@ -166,9 +166,10 @@ internal sealed partial class WorkspaceForm
         toggle.CheckedChanged += (_, _) =>
         {
             content.Visible = toggle.Checked;
-            int expanded = limitHeight ? Math.Min(height, 255) : height;
+            int contentHeight = content.MinimumSize.Height;
+            int expanded = limitHeight ? Math.Min(contentHeight, (int)Math.Round(255 * DeviceDpi / 96d)) : contentHeight;
             container.RowStyles[1].Height = toggle.Checked ? expanded : 0;
-            container.Height = 37 + (toggle.Checked ? expanded : 0);
+            container.Height = (int)Math.Ceiling(container.RowStyles[0].Height) + (toggle.Checked ? expanded : 0);
         };
         container.Controls.Add(toggle, 0, 0); container.Controls.Add(viewport, 0, 1);
         return container;

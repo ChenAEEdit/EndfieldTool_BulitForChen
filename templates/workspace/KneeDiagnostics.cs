@@ -80,7 +80,8 @@ public static class KneeDiagnostics
         return path;
     }
 
-    static Variant Inspect(Animator original, string walk, string mode, string output)
+    static Variant Inspect(Animator original, string walk, string mode, string output,
+        string clipOverride = null, string stateOverride = null, Avatar avatarOverride = null)
     {
         var scene = EditorSceneManager.NewPreviewScene();
         GameObject root = null; AnimationClip direct = null; AnimatorOverrideController temporaryController = null;
@@ -92,6 +93,7 @@ public static class KneeDiagnostics
             foreach (var behaviour in root.GetComponentsInChildren<MonoBehaviour>(true)) behaviour.enabled = false;
             foreach (var transform in root.GetComponentsInChildren<Transform>(true)) transform.gameObject.layer = 31;
             var animator = root.GetComponent<Animator>(); animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            if (avatarOverride) animator.avatar = avatarOverride;
             var transforms = root.GetComponentsInChildren<Transform>(true);
             var positions = transforms.Select(t => t.localPosition).ToArray();
             var rotations = transforms.Select(t => t.localRotation).ToArray();
@@ -118,7 +120,7 @@ public static class KneeDiagnostics
                 regions.Add(new Region { renderer = renderer, baked = baked, a = a.ToArray(), b = b.ToArray(), lengths = lengths.ToArray() });
             }
             string clipBase = "Assets/EndfieldChenTool/Animations/" + (walk == "ui" ? "Chen_UI_Walk" : "Chen_Walk");
-            var current = AssetDatabase.LoadAssetAtPath<AnimationClip>(clipBase + ".anim");
+            var current = AssetDatabase.LoadAssetAtPath<AnimationClip>(clipOverride ?? clipBase + ".anim");
             if (mode == "direct_source")
             {
                 var source = AssetDatabase.LoadAssetAtPath<AnimationClip>(clipBase + "_Source.anim");
@@ -142,7 +144,7 @@ public static class KneeDiagnostics
             {
                 for (int i = 0; i < transforms.Length; i++) { transforms[i].localPosition = positions[i]; transforms[i].localRotation = rotations[i]; transforms[i].localScale = scales[i]; }
                 if (mode == "direct_source") direct.SampleAnimation(root, time);
-                else { animator.Rebind(); animator.Update(0); animator.Play(0, 0, time / current.length); animator.Update(0); }
+                else { animator.Rebind(); animator.Update(0); animator.Play(stateOverride == null ? 0 : Animator.StringToHash(stateOverride), 0, time / current.length); animator.Update(0); }
             };
             float duration = direct ? direct.length : current.length;
             for (int index = 0; index < 25; index++)

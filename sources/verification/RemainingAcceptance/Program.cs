@@ -78,10 +78,10 @@ try
         JsonFiles.Write(Path.Combine(reports, "scan-result.json"), result);
         Console.WriteLine($"Scan complete: {result.Catalog?.Characters.Count} characters, {result.CatalogPath}");
     }
-    else if (args[3] == "actor-movement")
+    else if (args[3] is "actor-movement" or "actors-advanced")
     {
         var results = new List<object>();
-        foreach (string actor in new[] { "avywen", "lifeng" })
+        foreach (string actor in (Environment.GetEnvironmentVariable("ENDFIELD_ACCEPTANCE_ACTORS") ?? "avywen,lifeng").Split(','))
         {
             string sourcePlan = File.ReadAllText(Path.Combine(reports, "actors", actor, "plan-path.txt")).Trim();
             var source = new SavedPlan(sourcePlan, JsonFiles.Read<ExtractionPlan>(sourcePlan));
@@ -107,28 +107,72 @@ try
             var clips = names.Select(name => inventory.Objects.Single(row => row.Kind == "AnimationClip" && row.Name == name)).ToList();
             var prepared = await new ObjectWorkflow().ExecuteAsync(saved, "prepare", inspected.InventoryPath,
                 new ObjectExportSelection(model.Key, model.LinkedAvatarKey ?? throw new Exception("Selected model has no linked Avatar"), clips.Select(c => c.Key).ToList(),
-                    new AnimationPreparationOptions { ModelImportScale = 100 }), progress, deadline.Token);
+                    new AnimationPreparationOptions { ModelImportScale = 100, DropUnmatched = args[3] == "actors-advanced" }), progress, deadline.Token);
+            File.WriteAllText(Path.Combine(reports, "actors", actor, args[3] + "-plan-path.txt"), saved.FilePath);
             var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
             Require(generated.Result.Adapted && generated.Result.ExpectedAdaptedClips == 3, "Shared movement and two idles generated for " + actor);
             File.WriteAllText(Path.Combine(reports, "actors", actor, "movement-plan-path.txt"), saved.FilePath);
-            JsonFiles.Write(Path.Combine(reports, "actors", actor, "movement-generation.json"), new { passed = true, model, clips, prepared, generated, saved.FilePath, playbackVerified = false });
+            JsonFiles.Write(Path.Combine(reports, "actors", actor, args[3] + "-generation.json"), new { passed = true, advancedOption = args[3] == "actors-advanced", fullTrackFidelity = false, model, clips, prepared, generated, saved.FilePath, playbackVerified = false });
             results.Add(new { actor, saved.FilePath, prepared.UnityAssetRoot });
         }
         JsonFiles.Write(Path.Combine(reports, "actor-movement.json"), new { passed = true, actors = results, playbackVerified = false });
     }
-    else if (args[3] == "shared")
+    else if (args[3] is "shared" or "shared-advanced" or "shared-neutral" or "shared-knee")
     {
         var state = JsonFiles.Read<TargetState>(statePath);
         var saved = new SavedPlan(state.First, JsonFiles.Read<ExtractionPlan>(state.First));
         var prior = ObjectWorkflow.ReadResult(saved)!;
         var inventory = ObjectWorkflow.ReadInventory(saved, prior.InventoryPath!);
         var model = inventory.Objects.Single(row => row.IsModelCandidate && row.PathId == saved.Plan.RootPathId);
-        var names = new[] { "female_walk", "A_actor_chen_customized_state_walk_loop", "A_actor_chen_ui_relax_loop" };
+        bool single = args[3] is "shared-neutral" or "shared-knee";
+        var names = single ? new[] { "female_walk" } : new[] { "female_walk", "A_actor_chen_customized_state_walk_loop", "A_actor_chen_ui_relax_loop" };
         var clips = names.Select(name => inventory.Objects.Single(row => row.Kind == "AnimationClip" && row.Name == name)).ToList();
         var prepared = await new ObjectWorkflow().ExecuteAsync(saved, "prepare", prior.InventoryPath,
+            new ObjectExportSelection(model.Key, model.LinkedAvatarKey, clips.Select(c => c.Key).ToList(), new AnimationPreparationOptions { ModelImportScale = 100,
+                DropUnmatched = args[3] != "shared", ExcludedDescendants = single ? ["Bip001_Head"] : [],
+                ExcludedNodes = args[3] == "shared-knee" ? ["corrective_Knee_L_ty_plus", "corrective_Knee_L_ty_minus", "corrective_Knee_R_ty_plus", "corrective_Knee_R_ty_minus"] : [] }), progress, deadline.Token);
+        var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
+        JsonFiles.Write(Path.Combine(reports, args[3] + "-generation.json"), new { passed = generated.Result.Adapted, advancedOption = args[3] != "shared", fullTrackFidelity = false, model, clips, prepared, generated, saved.FilePath, playbackVerified = false });
+    }
+    else if (args[3] is "regression" or "long-path")
+    {
+        var state = JsonFiles.Read<TargetState>(statePath);
+        var prior = new SavedPlan(state.First, JsonFiles.Read<ExtractionPlan>(state.First));
+        var source = ObjectWorkflow.ReadResult(prior)!;
+        var inventory = ObjectWorkflow.ReadInventory(prior, source.InventoryPath!);
+        var model = inventory.Objects.Single(row => row.IsModelCandidate && row.PathId == prior.Plan.RootPathId);
+        var names = args[3] == "regression" ? new[] { "A_actor_chen_customized_state_walk_end", "A_actor_chen_customized_state_walk_loop", "A_actor_chen_customized_state_walk_start", "A_actor_chen_ui_overview_loop", "A_actor_chen_ui_relax_loop" } : new[] { "A_actor_chen_ui_relax_loop" };
+        var saved = prior;
+        if (args[3] == "long-path")
+        {
+            string workspace = Path.Combine(reports, "长路径 空格", new string('a', 65), new string('b', 65), "工作区");
+            saved = new WorkspaceStore().Save(prior.Plan with { Id = Guid.NewGuid(), Options = prior.Plan.Options with { WorkspaceDirectory = workspace, UnityProject = state.ProjectB } });
+            UnityTaskTarget.Save(saved, state.ProjectB, saved.Plan.Options.UnityEditor);
+            var previous = BundleExtractionBackend.ReadResult(prior)!;
+            foreach (var file in previous.Files)
+            {
+                string destination = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "bundles", file.Group, Path.GetFileName(file.Path));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!); File.Copy(file.Path, destination, false);
+            }
+            await new BundleExtractionBackend().ExecuteAsync(saved, progress, deadline.Token);
+            source = await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
+            inventory = ObjectWorkflow.ReadInventory(saved, source.InventoryPath!);
+            model = inventory.Objects.Single(row => row.IsModelCandidate && row.PathId == prior.Plan.RootPathId);
+        }
+        var clips = names.Select(name => inventory.Objects.Single(row => row.Kind == "AnimationClip" && row.Name == name)).ToList();
+        var prepared = await new ObjectWorkflow().ExecuteAsync(saved, "prepare", source.InventoryPath,
             new ObjectExportSelection(model.Key, model.LinkedAvatarKey, clips.Select(c => c.Key).ToList(), new AnimationPreparationOptions { ModelImportScale = 100 }), progress, deadline.Token);
         var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
-        JsonFiles.Write(Path.Combine(reports, "shared-generation.json"), new { passed = generated.Result.Adapted, model, clips, prepared, generated, saved.FilePath, playbackVerified = false });
+        Require(generated.Result.Adapted && generated.Result.ExpectedAdaptedClips == names.Length, "Exact requested baseline clips generated");
+        JsonFiles.Write(Path.Combine(reports, args[3] + "-generation.json"), new { passed = true, clips, prepared, generated, saved.FilePath, longestOutputPath = prepared.Files.Max(f => f.Path.Length), playbackVerified = false });
+    }
+    else if (args[3] == "generate-latest")
+    {
+        var state = JsonFiles.Read<TargetState>(statePath);
+        var saved = new SavedPlan(state.First, JsonFiles.Read<ExtractionPlan>(state.First));
+        var prepared = ObjectWorkflow.ReadPreparation(saved)!;
+        var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
+        JsonFiles.Write(Path.Combine(reports, "latest-generation.json"), new { passed = generated.Result.Adapted, prepared, generated, saved.FilePath, playbackVerified = false });
     }
     else if (args[3] == "actors")
     {
