@@ -22,11 +22,17 @@ foreach (var item in all)
     if (kind == null) continue;
     string key = Key(item);
     int renderers = 0, bones = 0, nodes = 0;
-    bool candidate = false;
-    string? linkedAvatar = null, tos = null, rig = null, rigError = null;
+    bool candidate = false, hierarchyRoot = false;
+    string? linkedAvatar = null, linkedControllerKey = null, parentGameObjectKey = null, tos = null, rig = null, rigError = null;
+    string controllerEvidence = "none";
+    var controllerClips = new List<string>();
     if (item is GameObject gameObject)
     {
         bool root = gameObject.m_Transform != null && !gameObject.m_Transform.m_Father.TryGet(out _);
+        // An unresolved non-null parent is not proof of an independent asset root.
+        hierarchyRoot = gameObject.m_Transform != null && gameObject.m_Transform.m_Father.m_PathID == 0;
+        if (gameObject.m_Transform != null && gameObject.m_Transform.m_Father.TryGet(out var parentTransform)
+            && parentTransform.m_GameObject.TryGet(out var parentObject)) parentGameObjectKey = Key(parentObject);
         if (root || gameObject.m_Animator != null)
         {
             var pending = new Stack<Transform>();
@@ -49,6 +55,17 @@ foreach (var item in all)
             candidate = renderers > 0 || gameObject.m_Animator != null;
         }
         if (gameObject.m_Animator != null && gameObject.m_Animator.m_Avatar.TryGet(out var avatar)) linkedAvatar = Key(avatar);
+        if (gameObject.m_Animator != null && gameObject.m_Animator.m_Controller.TryGet(out var controller))
+        {
+            linkedControllerKey = Key(controller);
+            if (controller is AnimatorController actual)
+            {
+                controllerEvidence = "actual-animator-controller-reference";
+                foreach (var pointer in actual.m_AnimationClips)
+                    if (pointer.TryGet(out var referencedClip)) controllerClips.Add(Key(referencedClip));
+            }
+            else controllerEvidence = "unsupported-controller-type:" + controller.GetType().Name;
+        }
         if (candidate)
         {
             rig = Path.Combine(output, "rig-" + key + ".json");
@@ -64,8 +81,9 @@ foreach (var item in all)
     }
     rows.Add(new { key, kind, name = item.Name ?? "", pathId = item.m_PathID.ToString(),
         sourceAsset = item.assetsFile.fileName, sourceBundle = item.assetsFile.originalPath,
-        isModelCandidate = candidate, rendererCount = renderers, boneReferenceCount = bones,
-        hierarchyNodes = nodes, linkedAvatarKey = linkedAvatar, avatarTosPath = tos, rigEvidencePath = rig, rigEvidenceError = rigError,
+        isModelCandidate = candidate, hierarchyRoot, parentGameObjectKey, rendererCount = renderers, boneReferenceCount = bones,
+        hierarchyNodes = nodes, linkedAvatarKey = linkedAvatar, linkedControllerKey, controllerEvidence,
+        controllerClipKeys = controllerClips.Distinct().Order().ToArray(), avatarTosPath = tos, rigEvidencePath = rig, rigEvidenceError = rigError,
         bindingPathHashes = item is AnimationClip sourceClip ? sourceClip.m_ClipBindingConstant?.genericBindings?
             .Where(binding => binding.typeID == ClassIDType.Transform).Select(binding => binding.path).Distinct().Order().ToArray() ?? [] : Array.Empty<uint>() });
 }
