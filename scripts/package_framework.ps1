@@ -170,6 +170,6 @@ $readme = [IO.File]::ReadAllText((Join-Path $repoRoot 'docs\框架说明.md'))
 $readme = [regex]::Replace($readme, '\]\((?!<|[A-Za-z][A-Za-z0-9+.-]*:|/|#)([^)\r\n]+\.md(?:#[^)\r\n]*)?)\)', '](docs/$1)')
 [IO.File]::WriteAllText((Join-Path $packageRoot 'README.md'), $readme, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.13.0-role-unit-inference'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.14.0-persistent-catalog-parallel-scan'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

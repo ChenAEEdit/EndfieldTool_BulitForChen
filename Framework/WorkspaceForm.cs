@@ -11,6 +11,7 @@ internal sealed partial class WorkspaceForm : Form
     private readonly TabControl pages = new() { Dock = DockStyle.Fill };
     private readonly TextBox search = new() { Dock = DockStyle.Fill, PlaceholderText = "搜索角色名称、代码或资源路径" };
     private readonly TextBox resourceSearch = new() { Dock = DockStyle.Fill, PlaceholderText = "筛选资源名称或路径，例如 idle、walk；隐藏的勾选仍计入计划" };
+    private readonly ComboBox catalogSources = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly HashSet<string> checkedResourceIds = new(StringComparer.Ordinal);
     private readonly ListView characters = List("角色", "代码");
     private readonly CheckedListBox resources = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
@@ -24,6 +25,7 @@ internal sealed partial class WorkspaceForm : Form
     private readonly CheckBox importUnity = new() { Text = "生成 Unity 预览", AutoSize = true };
     private readonly CheckBox checkWeights = new() { Text = "检查骨骼权重", AutoSize = true };
     private readonly CheckBox verifyPlayback = new() { Text = "检查实际播放", AutoSize = true };
+    private readonly NumericUpDown scanWorkers = new() { Minimum = 1, Maximum = 8, Width = 72, TextAlign = HorizontalAlignment.Center };
     private readonly WorkspaceStore store = new();
     private readonly ITaskPlanner planner = new TaskPlanner();
     private readonly IGameResourceIndexer indexer = new GameResourceIndexer();
@@ -37,17 +39,19 @@ internal sealed partial class WorkspaceForm : Form
     private readonly ProgressBar scanProgress = new() { Dock = DockStyle.Fill, Maximum = 100 };
     private readonly TextBox scanLog = ReadOnlyText();
     private readonly List<Control> catalogActions = [];
+    private readonly List<CatalogSource> catalogSourceItems = [];
+    private readonly ScanCatalogStateStore scanCatalogState = new();
     private readonly System.Windows.Forms.Timer searchTimer = new() { Interval = 250 };
     private CancellationTokenSource? scanCancellation;
     private CancellationTokenSource? extractionCancellation;
     private string? latestIndexReport;
-    private bool updatePlanQueued, closeAfterScan, loadingResources;
+    private bool updatePlanQueued, closeAfterScan, loadingResources, refreshingCatalogSources;
     private ResourceCatalog? catalog;
     private CharacterEntry? selectedCharacter;
 
     public WorkspaceForm()
     {
-        Text = "终末地角色工作台 · 新角色自动适配 0.13.0";
+        Text = "终末地角色工作台 · 索引保留与并行扫描 0.14.0";
         Font = new Font("Microsoft YaHei UI", 10);
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96, 96);
@@ -90,6 +94,7 @@ internal sealed partial class WorkspaceForm : Form
         layout.Controls.Add(BuildNavigation(), 0, 2);
         search.TextChanged += (_, _) => { searchTimer.Stop(); searchTimer.Start(); };
         searchTimer.Tick += (_, _) => { searchTimer.Stop(); RefreshCharacters(); };
+        catalogSources.SelectedIndexChanged += (_, _) => SelectCatalogSource();
         characters.SelectedIndexChanged += (_, _) => SelectCharacter();
         resources.SelectedIndexChanged += (_, _) => ShowResource();
         resourceSearch.TextChanged += (_, _) => PopulateResources();
@@ -133,6 +138,7 @@ internal sealed partial class WorkspaceForm : Form
         };
         FormClosed += (_, _) => searchTimer.Dispose();
         RunAction(LoadSupportedCatalog);
+        RunAction(() => RestoreRecentScanCatalog(settings.WorkspaceDirectory, selectRestored: true));
         RunAction(RefreshTasks);
         sectionButtons[0].BackColor = Accent; sectionButtons[0].ForeColor = Color.White;
         UpdateContext();
@@ -173,12 +179,17 @@ internal sealed partial class WorkspaceForm : Form
         }
         tools.Controls.AddRange([probe, scan, forceScan]);
         layout.Controls.Add(tools, 0, 1);
-        var searchRow = Grid(2, 1);
+        var searchRow = Grid(4, 1);
+        searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
         searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        searchRow.Controls.Add(Note("当前索引"), 0, 0);
+        catalogSources.Margin = new Padding(0, 8, 12, 0);
+        searchRow.Controls.Add(catalogSources, 1, 0);
         search.Margin = new Padding(0, 8, 16, 0);
-        searchRow.Controls.Add(search, 0, 0);
-        searchRow.Controls.Add(catalogInfo, 1, 0);
+        searchRow.Controls.Add(search, 2, 0);
+        searchRow.Controls.Add(catalogInfo, 3, 0);
         layout.Controls.Add(searchRow, 0, 2);
 
         var body = Grid(2, 1);
@@ -255,10 +266,18 @@ internal sealed partial class WorkspaceForm : Form
             latestIndexReport = result.ReportPath;
             if (result.Catalog != null)
             {
-                catalog = result.Catalog;
+                if (result.CatalogPath == null) throw new InvalidDataException("扫描完成但没有返回索引文件路径。");
+                var workspace = Path.GetFullPath(options.WorkspaceDirectory);
+                RegisterCatalogSource(new CatalogSource("scan:" + workspace,
+                    "游戏扫描 · " + result.Catalog.GameBuild, result.Catalog, result.CatalogPath,
+                    result.ReportPath, workspace), select: true);
+                try { scanCatalogState.Save(workspace, result.CatalogPath, result.ReportPath); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+                {
+                    scanLog.AppendText("最近扫描索引未写入恢复记录：" + error.Message + Environment.NewLine);
+                }
                 search.Clear();
-                RefreshCharacters();
-                status.Text = $"索引已完成：{catalog.Characters.Count} 个角色名称候选；{CompatibilityText(result.CompatibilityStatus)}。";
+                status.Text = $"索引已完成：{result.Catalog.Characters.Count} 个角色名称候选；{CompatibilityText(result.CompatibilityStatus)}。";
             }
             else status.Text = "索引兼容性检查：" + CompatibilityText(result.CompatibilityStatus);
             scanLog.AppendText($"\r\n兼容状态：{CompatibilityText(result.CompatibilityStatus)}\r\n索引：{result.CatalogPath ?? "本次只检查格式，未扫描名称"}\r\n报告：{result.ReportPath}\r\n日志：{result.LogPath}\r\n{result.Catalog?.CoverageNote}\r\n");
@@ -353,7 +372,7 @@ internal sealed partial class WorkspaceForm : Form
         var layout = Grid(1, 5);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 53));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 255));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(Note("这些是新任务的默认设置。已有任务请使用窗口顶部的“更换当前任务项目”，当前任务目标始终显示在顶部。"), 0, 0);
@@ -367,19 +386,17 @@ internal sealed partial class WorkspaceForm : Form
         AddPath(table, 3, "Unity 编辑器", "unity", options.UnityEditor, true);
         AddPath(table, 4, "Blender", "blender", options.Blender, true);
         layout.Controls.Add(table, 0, 1);
-        var flags = Flow();
-        importUnity.Text = "预览场景请从动画适配页生成";
-        checkWeights.Text = "权重检查（待接入）";
-        verifyPlayback.Text = "播放检查（待接入）";
-        importUnity.Checked = checkWeights.Checked = verifyPlayback.Checked = false;
-        importUnity.Enabled = checkWeights.Enabled = verifyPlayback.Enabled = false;
-        flags.Controls.AddRange([importUnity, checkWeights, verifyPlayback]);
-        foreach (Control control in flags.Controls) control.Margin = new Padding(4, 10, 25, 0);
-        layout.Controls.Add(flags, 0, 2);
+        var scanOptions = Flow();
+        scanOptions.Controls.Add(new Label { Text = "资源扫描并行路数（1–8）", AutoSize = true, Padding = new Padding(0, 9, 0, 0) });
+        scanWorkers.Value = Math.Clamp(options.ScanWorkers, 1, 8);
+        scanOptions.Controls.Add(scanWorkers);
+        scanOptions.Controls.Add(new Label { Text = "默认 4 路；较慢磁盘可调低", AutoSize = true, Padding = new Padding(0, 9, 0, 0) });
+        layout.Controls.Add(scanOptions, 0, 2);
         var actions = Flow();
         actions.Controls.Add(ActionButton("保存环境设置", () => RunAction(() =>
         {
             JsonFiles.Write(WorkspaceStore.SettingsPath, CurrentOptions());
+            RestoreRecentScanCatalog(paths["workspace"].Text.Trim(), selectRestored: true);
             UpdateContext();
             status.Text = "新任务默认设置已保存。已有任务的项目不变，可在顶部单独更换。";
         })));
@@ -416,6 +433,7 @@ internal sealed partial class WorkspaceForm : Form
     {
         GameDirectory = paths["game"].Text.Trim(), WorkspaceDirectory = paths["workspace"].Text.Trim(),
         UnityProject = paths["project"].Text.Trim(), UnityEditor = paths["unity"].Text.Trim(), Blender = paths["blender"].Text.Trim(),
+        ScanWorkers = decimal.ToInt32(scanWorkers.Value),
         ImportUnity = importUnity.Checked, CheckWeights = checkWeights.Checked, VerifyPlayback = verifyPlayback.Checked
     };
 
@@ -429,9 +447,10 @@ internal sealed partial class WorkspaceForm : Form
 
     private void LoadSupportedCatalog()
     {
-        catalog = new ProfileCatalogProvider().Load(Path.Combine(AppContext.BaseDirectory, "profiles", "chen.json"));
-        RefreshCharacters();
-        status.Text = "已加载陈千语配置中的模型、Avatar 和两条行走；尚未扫描游戏或执行提取。";
+        var supported = new ProfileCatalogProvider().Load(Path.Combine(AppContext.BaseDirectory, "profiles", "chen.json"));
+        RegisterCatalogSource(new CatalogSource("supported:chen", "已支持角色 · 陈千语", supported,
+            null, null, null), select: true);
+        status.Text = "已切换到已支持角色来源；其他索引仍保留，可从“当前索引”切回。";
     }
 
     private void ImportCatalog()
@@ -439,9 +458,10 @@ internal sealed partial class WorkspaceForm : Form
         using var dialog = new OpenFileDialog { Filter = "角色资源索引 (*.json)|*.json" };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var loaded = new JsonCatalogProvider().Load(dialog.FileName);
-        catalog = loaded with { SourceDescription = "导入索引：" + dialog.FileName };
-        RefreshCharacters();
-        status.Text = "已读取索引元数据；未核对当前游戏，也未解码或验证资源。";
+        var path = Path.GetFullPath(dialog.FileName);
+        RegisterCatalogSource(new CatalogSource("import:" + path, "导入索引 · " + Path.GetFileName(path),
+            loaded with { SourceDescription = "导入索引：" + path }, null, null, null), select: true);
+        status.Text = "已切换到导入索引；其他索引仍保留。索引元数据未核对当前游戏，也未解码或验证资源。";
     }
 
     private void ExportCatalog()
@@ -467,9 +487,64 @@ internal sealed partial class WorkspaceForm : Form
             item.SubItems.Add(character.Id);
             characters.Items.Add(item);
         }
-        catalogInfo.Text = $"版本 {catalog.GameBuild}\n当前 {characters.Items.Count} / {catalog.Characters.Count} 个角色 · 配置／名称候选";
+        var sourceLabel = (catalogSources.SelectedItem as CatalogSource)?.Label ?? catalog.SourceDescription;
+        catalogInfo.Text = $"{sourceLabel}\n版本 {catalog.GameBuild} · 当前 {characters.Items.Count} / {catalog.Characters.Count} 个角色";
         if (characters.Items.Count > 0) characters.Items[0].Selected = true;
         UpdatePlan();
+    }
+
+    private void RegisterCatalogSource(CatalogSource source, bool select)
+    {
+        int existing = catalogSourceItems.FindIndex(item => item.Key == source.Key);
+        if (existing >= 0) catalogSourceItems[existing] = source;
+        else catalogSourceItems.Add(source);
+        string? selectedKey = select ? source.Key : (catalogSources.SelectedItem as CatalogSource)?.Key;
+        RefreshCatalogSourceChoices(selectedKey);
+    }
+
+    private void RefreshCatalogSourceChoices(string? selectedKey)
+    {
+        refreshingCatalogSources = true;
+        try
+        {
+            catalogSources.Items.Clear();
+            foreach (var source in catalogSourceItems) catalogSources.Items.Add(source);
+            int index = catalogSourceItems.FindIndex(item => item.Key == selectedKey);
+            catalogSources.SelectedIndex = index >= 0 ? index : catalogSourceItems.Count > 0 ? 0 : -1;
+        }
+        finally { refreshingCatalogSources = false; }
+        SelectCatalogSource();
+    }
+
+    private void SelectCatalogSource()
+    {
+        if (refreshingCatalogSources || catalogSources.SelectedItem is not CatalogSource source) return;
+        catalog = source.Catalog;
+        latestIndexReport = source.ReportPath;
+        RefreshCharacters();
+    }
+
+    private void RestoreRecentScanCatalog(string workspaceDirectory, bool selectRestored)
+    {
+        var workspace = string.IsNullOrWhiteSpace(workspaceDirectory) ? "" : Path.GetFullPath(workspaceDirectory);
+        catalogSourceItems.RemoveAll(source => source.WorkspaceDirectory != null
+            && !string.Equals(source.WorkspaceDirectory, workspace, StringComparison.OrdinalIgnoreCase));
+        bool loaded = scanCatalogState.TryLoad(workspaceDirectory, out var restored, out var catalogPath,
+            out var reportPath, out var warning);
+        var key = "scan:" + workspace;
+        if (loaded && restored != null && catalogPath != null)
+        {
+            RegisterCatalogSource(new CatalogSource(key, "最近扫描 · " + restored.GameBuild,
+                restored, catalogPath, reportPath, workspace), select: selectRestored);
+            status.Text = "已恢复最近扫描索引（" + restored.GameBuild + "），没有重新扫描。";
+            return;
+        }
+
+        catalogSourceItems.RemoveAll(source => source.Key == key);
+        if (warning != null) status.Text = warning;
+        string? selectedKey = catalogSources.SelectedItem is CatalogSource selected
+            && catalogSourceItems.Any(source => source.Key == selected.Key) ? selected.Key : "supported:chen";
+        RefreshCatalogSourceChoices(selectedKey);
     }
 
     private void SelectCharacter()
@@ -787,5 +862,10 @@ internal sealed partial class WorkspaceForm : Form
     private sealed record ResourceChoice(ResourceEntry Entry)
     {
         public override string ToString() => $"[{KindText(Entry.Kind)}] {Entry.Name} · {(Entry.Association == AssociationKind.NameCandidate ? "名称候选" : "已收录")}";
+    }
+    private sealed record CatalogSource(string Key, string Label, ResourceCatalog Catalog,
+        string? CatalogPath, string? ReportPath, string? WorkspaceDirectory)
+    {
+        public override string ToString() => Label;
     }
 }

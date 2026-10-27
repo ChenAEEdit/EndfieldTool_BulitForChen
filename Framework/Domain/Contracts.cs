@@ -69,6 +69,7 @@ public sealed record WorkspaceOptions
     public string UnityProject { get; init; } = @"D:\Unity 3D\Projects\Codex_ZMD";
     public string UnityEditor { get; init; } = @"D:\Unity 3D\Editor\6000.0.84f1\Editor\Unity.exe";
     public string Blender { get; init; } = @"D:\Blender\5.0.1\blender.exe";
+    public int ScanWorkers { get; init; } = 4;
     public bool ImportUnity { get; init; }
     public bool CheckWeights { get; init; }
     public bool VerifyPlayback { get; init; }

@@ -15,6 +15,8 @@ public sealed class GameResourceIndexer : IGameResourceIndexer
     public async Task<GameIndexResult> BuildAsync(WorkspaceOptions options, bool force,
         IProgress<IndexProgress> progress, CancellationToken cancellationToken, bool probeOnly = false)
     {
+        if (options.ScanWorkers is < 1 or > 8)
+            throw new InvalidDataException("扫描并行路数必须在 1 到 8 之间。");
         var python = MainForm.FindPython(options.Blender);
         if (!File.Exists(python)) throw new InvalidDataException("找不到 Python，请在环境页面填写 Blender 路径。");
         var script = Path.Combine(AppContext.BaseDirectory, "scripts", "index_game_resources.py");
@@ -36,6 +38,8 @@ public sealed class GameResourceIndexer : IGameResourceIndexer
         start.Environment["PYTHONIOENCODING"] = "utf-8";
         foreach (var argument in new[] { script, "--game", options.GameDirectory, "--workspace", root })
             start.ArgumentList.Add(argument);
+        start.ArgumentList.Add("--workers");
+        start.ArgumentList.Add(options.ScanWorkers.ToString(System.Globalization.CultureInfo.InvariantCulture));
         if (force) start.ArgumentList.Add("--force");
         if (probeOnly) start.ArgumentList.Add("--probe-only");
         cancellationToken.ThrowIfCancellationRequested();

@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import argparse
 import bisect
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from collections import defaultdict
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import sqlite3
 import struct
@@ -185,6 +187,92 @@ def scan_chunk(path, records, on_progress):
     return list(matches.values()), checksum.hexdigest().upper()
 
 
+def scan_chunks(paths, grouped, signatures, db, force, workers, total):
+    """Scan independent CHK files concurrently; keep all cache access on this thread."""
+    completed, reused, hits = 0, 0, []
+    work = []
+    progress_updates = queue.SimpleQueue()
+    active_progress = {}
+    for position, (group, chunk, path) in enumerate(paths):
+        key = group + ":" + chunk
+        signature = file_signature(path, signatures[group])
+        cached = db.execute("SELECT hits FROM chunks WHERE id=? AND signature=?", (key, signature)).fetchone()
+        size = path.stat().st_size
+        if cached is not None and not force:
+            hits.extend(json.loads(cached[0]))
+            reused += 1
+            completed += size
+            emit(f"复用缓存 {position + 1}/{len(paths)}：{group}/{chunk}",
+                 17 + int(78 * completed / max(1, total)))
+        else:
+            work.append((position, group, chunk, path, key, signature, size))
+
+    emit(f"扫描 {len(work)} 个未缓存 CHK；缓存复用 {reused} 个；并行读取 {workers} 路。",
+         17 + int(78 * completed / max(1, total)))
+    iterator = iter(work)
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="chk-scan")
+    futures = {}
+
+    def submit_next():
+        try:
+            item = next(iterator)
+        except StopIteration:
+            return False
+        position, group, chunk, path, key, signature, _size = item
+        active_progress[key] = 0
+        def report(amount, work_key=key):
+            progress_updates.put((work_key, amount))
+        futures[executor.submit(scan_chunk, path, grouped[(group, chunk)], report)] = item
+        emit(f"开始扫描 {position + 1}/{len(paths)}：{group}/{chunk}",
+             17 + int(78 * completed / max(1, total)))
+        return True
+
+    try:
+        for _ in range(min(workers, len(work))):
+            submit_next()
+        while futures:
+            done, _ = wait(futures, timeout=0.1, return_when=FIRST_COMPLETED)
+            while not progress_updates.empty():
+                key, amount = progress_updates.get()
+                previous = active_progress.get(key, 0)
+                if amount > previous:
+                    completed += amount - previous
+                    active_progress[key] = amount
+            finished = []
+            failure = None
+            for future in done:
+                position, group, chunk, _path, key, signature, size = futures.pop(future)
+                try:
+                    found, sha256 = future.result()
+                except BaseException as error:
+                    if failure is None:
+                        failure = error
+                    continue
+                finished.append((position, group, chunk, key, signature, size, found, sha256))
+            for position, group, chunk, key, signature, size, found, sha256 in finished:
+                previous = active_progress.pop(key, 0)
+                if previous < size:
+                    completed += size - previous
+                with db:
+                    db.execute("INSERT OR REPLACE INTO chunks VALUES (?,?,?,?)",
+                               (key, signature, sha256, json.dumps(found)))
+                hits.extend(found)
+                emit(f"完成扫描 {position + 1}/{len(paths)}：{group}/{chunk}",
+                     17 + int(78 * completed / max(1, total)))
+            if failure is not None:
+                raise failure
+            for _ in finished:
+                submit_next()
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    return hits, completed, reused
+
+
 def make_catalog(hits, records, manifest, fingerprint, build, manifest_md5, coverage):
     available = defaultdict(list)
     for row in records:
@@ -300,6 +388,8 @@ def main():
     parser.add_argument("--game", required=True, type=Path)
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--workers", type=int, choices=range(1, 9), default=4,
+                        help="parallel CHK readers (1-8)")
     parser.add_argument("--probe-only", action="store_true", help="read and validate index formats without scanning CHK names")
     args = parser.parse_args()
     game = normalize_game(args.game.resolve())
@@ -362,30 +452,14 @@ def main():
     missing = [str(path) for _, _, path in paths if not path.is_file()]
     paths = [(group, chunk, path) for group, chunk, path in paths if path.is_file()]
     total = sum(path.stat().st_size for _, _, path in paths)
-    completed, reused, hits = 0, 0, []
     db = sqlite3.connect(cache / "chunks.sqlite")
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("CREATE TABLE IF NOT EXISTS chunks (id TEXT PRIMARY KEY, signature TEXT NOT NULL, sha256 TEXT NOT NULL, hits TEXT NOT NULL)")
-    for position, (group, chunk, path) in enumerate(paths):
-        key = group + ":" + chunk
-        signature = file_signature(path, signatures[group])
-        cached = db.execute("SELECT hits FROM chunks WHERE id=? AND signature=?", (key, signature)).fetchone()
-        emit(f"扫描名称 {position + 1}/{len(paths)}：{group}/{chunk}", 17 + int(78 * completed / max(1, total)))
-        if cached is not None and not args.force:
-            found = json.loads(cached[0]); reused += 1
-        else:
-            last_report = [-1]
-            def progress(amount):
-                percent = 17 + int(78 * (completed + amount) / max(1, total))
-                if percent != last_report[0]:
-                    emit(f"扫描名称 {position + 1}/{len(paths)}，已读取 {(completed + amount) // (1024 ** 2)} MiB", percent)
-                    last_report[0] = percent
-            found, sha256 = scan_chunk(path, grouped[(group, chunk)], progress)
-            with db:
-                db.execute("INSERT OR REPLACE INTO chunks VALUES (?,?,?,?)", (key, signature, sha256, json.dumps(found)))
-        hits.extend(found)
-        completed += path.stat().st_size
-    db.close()
+    try:
+        hits, completed, reused = scan_chunks(paths, grouped, signatures, db,
+                                              args.force, args.workers, total)
+    finally:
+        db.close()
     emit("合并角色名称候选与清单依赖…", 96)
     encrypted = sum(1 for row in records if row["use_encrypt"] and row["name"].lower().endswith(".ab"))
     coverage = ("仅发现未加密 Bundle 中可见的 ASCII 模型／动作名称；压缩、加密、其他命名形式可能漏项。"
@@ -402,7 +476,7 @@ def main():
         "blcFormats": blc_formats, "manifestFormat": manifest_format, "adapterRevision": ADAPTER_REVISION,
         "manifestMd5": manifest_md5, "manifestVersion": manifest.version, "vfsGroups": len(signatures),
         "vfsRecords": len(records), "scannedChunks": len(paths), "reusedChunks": reused,
-        "scannedBytes": completed, "encryptedBundleRecordsSkipped": encrypted,
+        "scannedBytes": completed, "encryptedBundleRecordsSkipped": encrypted, "workers": args.workers,
         "missingChunks": missing, "missingOrAmbiguousDependencyNames": missing_deps,
         "candidateCharacters": len(catalog["characters"]), "candidateResources": sum(len(c["resources"]) for c in catalog["characters"]),
         "coverageNote": coverage, "decoded": False, "adapted": False, "verified": False,
