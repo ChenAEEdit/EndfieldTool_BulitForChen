@@ -8,7 +8,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath($Project)
 if (-not $projectRoot.StartsWith('D:\AAAChatGPT\UnityValidation\', [StringComparison]::OrdinalIgnoreCase)) { throw '仅使用独立验收工程。' }
-if (Get-Process Unity -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Editor }) { throw '请先等待现有 Unity 验收进程结束。' }
+if ($Configs.Count -eq 0) { throw '至少指定一个适配配置。' }
+foreach ($configPath in $Configs) {
+    if ($configPath -cnotmatch '^Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32}/adaptation\.json$' -or
+        -not [IO.File]::Exists([IO.Path]::Combine($projectRoot, $configPath))) { throw "适配配置路径无效或不存在：$configPath" }
+}
+$projectLock = Join-Path $projectRoot 'Temp/UnityLockfile'
+if (Test-Path -LiteralPath $projectLock -PathType Leaf) {
+    try { $lockProbe = [IO.File]::Open($projectLock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $lockProbe.Dispose() }
+    catch { throw '此独立验收工程正在 Unity 中使用，请先保存并关闭该工程。其他工程无需关闭。' }
+}
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $reports = [IO.Path]::GetFullPath($ReportDirectory)
 New-Item -ItemType Directory -Path $reports -Force | Out-Null
@@ -35,3 +44,4 @@ try {
     Write-Output "PASS $Mode verification: $(Join-Path $reports $resultName)"
 }
 finally { if (-not $owned.HasExited) { $owned.Kill($true); $owned.WaitForExit() }; $owned.Dispose() }
+exit 0

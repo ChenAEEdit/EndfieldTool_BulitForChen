@@ -12,7 +12,7 @@ public static class KneeDiagnostics
 {
     [Serializable] class Pose { public string name; public Vector3 position, scale; public Quaternion rotation; }
     [Serializable] class Sample { public float time, edge99, maxEdge, compressedEdgeFraction; public Pose[] bones; }
-    [Serializable] class Variant { public string walk, mode; public int kneeEdges; public Sample[] samples; public string[] images; }
+    [Serializable] class Variant { public string walk, mode; public int kneeEdges, sampledVertices; public bool finiteGeometry; public Sample[] samples; public string[] images; }
     [Serializable] class Report { public string schema = "endfield-knee-diagnostic-v1", unityVersion, error, comparisonScene; public Variant[] variants; public bool sourceAssetsModified = false; }
     class Region { public SkinnedMeshRenderer renderer; public Mesh baked; public int[] a, b; public float[] lengths; }
 
@@ -139,7 +139,7 @@ public static class KneeDiagnostics
                 temporaryController.ApplyOverrides(overrides.Select(pair => new KeyValuePair<AnimationClip, AnimationClip>(pair.Key, pair.Key == current ? direct : pair.Value)).ToList());
                 animator.runtimeAnimatorController = temporaryController;
             }
-            var samples = new List<Sample>(); float worst = -1, worstTime = 0;
+            var samples = new List<Sample>(); float worst = -1, worstTime = 0; int sampledVertices = 0;
             Action<float> pose = time =>
             {
                 for (int i = 0; i < transforms.Length; i++) { transforms[i].localPosition = positions[i]; transforms[i].localRotation = rotations[i]; transforms[i].localScale = scales[i]; }
@@ -155,6 +155,9 @@ public static class KneeDiagnostics
                 {
                     region.renderer.BakeMesh(region.baked);
                     var vertices = region.baked.vertices;
+                    sampledVertices += vertices.Length;
+                    if (vertices.Any(v => float.IsNaN(v.x) || float.IsInfinity(v.x) || float.IsNaN(v.y) || float.IsInfinity(v.y) || float.IsNaN(v.z) || float.IsInfinity(v.z)))
+                        throw new Exception("Non-finite sampled geometry at " + time + " / " + region.renderer.name);
                     for (int i = 0; i < region.a.Length; i++)
                         ratios.Add(Vector3.Distance(region.renderer.transform.TransformPoint(vertices[region.a[i]]), region.renderer.transform.TransformPoint(vertices[region.b[i]])) / region.lengths[i]);
                 }
@@ -175,7 +178,16 @@ public static class KneeDiagnostics
                 string path = Path.Combine(directory, side < 0 ? "knees_front.png" : "knees_back.png");
                 Capture(root, center, side, path); images.Add(path);
             }
-            return new Variant { walk = walk, mode = mode, kneeEdges = regions.Sum(region => region.a.Length), samples = samples.ToArray(), images = images.ToArray() };
+            foreach (float fraction in new[] { 0f, .25f, .5f, .75f })
+            {
+                pose(duration * fraction); center = (knees[0].position + knees[1].position) * .5f;
+                foreach (int side in new[] { -1, 2 })
+                {
+                    string path = Path.Combine(directory, "phase_" + Mathf.RoundToInt(fraction * 100).ToString("D2") + (side == -1 ? "_front.png" : "_side.png"));
+                    Capture(root, center, side, path); images.Add(path);
+                }
+            }
+            return new Variant { walk = walk, mode = mode, kneeEdges = regions.Sum(region => region.a.Length), sampledVertices = sampledVertices, finiteGeometry = true, samples = samples.ToArray(), images = images.ToArray() };
         }
         finally
         {
@@ -194,7 +206,7 @@ public static class KneeDiagnostics
         var camera = go.AddComponent<Camera>(); camera.scene = root.scene; camera.cullingMask = 1 << 31;
         camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = new Color(.16f, .18f, .21f);
         camera.orthographic = true; camera.orthographicSize = .30f; camera.nearClipPlane = .01f;
-        camera.transform.position = center + root.transform.forward * (side * 1.5f) + root.transform.right * .15f;
+        camera.transform.position = center + (side == 2 ? root.transform.right * 1.5f : root.transform.forward * (side * 1.5f) + root.transform.right * .15f);
         camera.transform.LookAt(center);
         var light = lightObject.AddComponent<Light>(); light.type = LightType.Directional; light.intensity = 1.3f; light.cullingMask = 1 << 31;
         light.transform.rotation = camera.transform.rotation;

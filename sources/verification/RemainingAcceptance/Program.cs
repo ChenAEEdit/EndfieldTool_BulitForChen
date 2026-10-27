@@ -8,6 +8,7 @@ using EndfieldChenTool.Framework.Services;
 
 if (args.Length != 4) { Console.Error.WriteLine("<package> <source-plan> <reports> <target|target-read|scan|extract>"); return 2; }
 string package = Path.GetFullPath(args[0]), reports = Path.GetFullPath(args[2]);
+string priorReports = Path.GetFullPath(Environment.GetEnvironmentVariable("ENDFIELD_ACCEPTANCE_PRIOR_REPORTS") ?? reports);
 Directory.CreateDirectory(reports);
 AppDomain.CurrentDomain.SetData("APP_CONTEXT_BASE_DIRECTORY", package + Path.DirectorySeparatorChar);
 var original = new SavedPlan(Path.GetFullPath(args[1]), JsonFiles.Read<ExtractionPlan>(args[1]));
@@ -28,7 +29,7 @@ try
         var state = JsonFiles.Read<TargetState>(Path.Combine(baseline, "target-state.json"));
         var prior = new SavedPlan(state.First, JsonFiles.Read<ExtractionPlan>(state.First));
         var saved = args[3] != "rig-prepare"
-            ? new SavedPlan(File.ReadAllText(Path.Combine(reports, "rig-prepare-plan.txt")).Trim(), JsonFiles.Read<ExtractionPlan>(File.ReadAllText(Path.Combine(reports, "rig-prepare-plan.txt")).Trim()))
+            ? new SavedPlan(File.ReadAllText(Path.Combine(priorReports, "rig-prepare-plan.txt")).Trim(), JsonFiles.Read<ExtractionPlan>(File.ReadAllText(Path.Combine(priorReports, "rig-prepare-plan.txt")).Trim()))
             : new WorkspaceStore().Save(prior.Plan with { Id = Guid.NewGuid(), Options = prior.Plan.Options with { WorkspaceDirectory = Path.Combine(reports, "workspace"), UnityProject = state.ProjectB } });
         File.WriteAllText(Path.Combine(reports, "rig-prepare-plan.txt"), saved.FilePath);
         ObjectOperationResult inspected;
@@ -84,7 +85,7 @@ try
         string nativePath = Path.Combine(root, "Generated", "adaptation-result.json");
         byte[] bytes = File.ReadAllBytes(nativePath);
         var checks = new List<object>();
-        foreach (string mutation in new[] { "missing-row", "duplicate-row", "wrong-hash", "wrong-clip-id", "empty-audit" })
+        foreach (string mutation in new[] { "missing-row", "duplicate-row", "wrong-hash", "wrong-clip-id", "empty-audit", "missing-pose-check", "excess-pose-error", "missing-body-paths" })
         {
             var report = JsonNode.Parse(bytes)!;
             var clip = report["clips"]![0]!;
@@ -96,6 +97,9 @@ try
                 case "wrong-hash": tracks[0]!["sourceHash"] = "123"; break;
                 case "wrong-clip-id": clip["id"] = "bad-id"; break;
                 case "empty-audit": tracks.Clear(); break;
+                case "missing-pose-check": clip["retargetPoseChecked"] = false; break;
+                case "excess-pose-error": clip["retargetMaxRotationError"] = .251f; break;
+                case "missing-body-paths": clip["worldBodyPaths"]!.AsArray().Clear(); break;
             }
             try
             {
@@ -117,6 +121,42 @@ try
         finally { File.WriteAllBytes(evidence, sourceBytes); }
         Require((await UnityAdaptationResults.ImportAsync(saved, deadline.Token)).Adapted, "Untouched restored audit accepted");
         JsonFiles.Write(Path.Combine(reports, "audit-guards.json"), new { passed = true, checks, nativeReportRestored = File.ReadAllBytes(nativePath).SequenceEqual(bytes), sourceRigRestored = File.ReadAllBytes(evidence).SequenceEqual(sourceBytes) });
+    }
+    else if (args[3] == "cold-workflow")
+    {
+        string priorPath = File.ReadAllText(Path.Combine(priorReports, "rig-prepare-plan.txt")).Trim();
+        var prior = new SavedPlan(priorPath, JsonFiles.Read<ExtractionPlan>(priorPath));
+        Guid taskId = Guid.NewGuid();
+        string project = Path.Combine(@"D:\AAAChatGPT\UnityValidation", "SharedRig_Final_20261027_" + taskId.ToString("N")[..8]);
+        if (Directory.Exists(project)) throw new IOException("Fresh validation project unexpectedly exists");
+        File.WriteAllText(Path.Combine(reports, "cold-project.txt"), project);
+        var start = new ProcessStartInfo(prior.Plan.Options.UnityEditor) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
+        foreach (string argument in new[] { "-batchmode", "-quit", "-nographics", "-createProject", project, "-logFile", Path.Combine(reports, "cold-project-create.log") }) start.ArgumentList.Add(argument);
+        using (var editor = Process.Start(start)!)
+        {
+            try { await editor.WaitForExitAsync(deadline.Token); }
+            finally { if (!editor.HasExited) { editor.Kill(true); await editor.WaitForExitAsync(); } }
+            Require(editor.ExitCode == 0 && File.Exists(Path.Combine(project, "ProjectSettings", "ProjectVersion.txt")), "Fresh Unity project created by actual editor");
+        }
+        var saved = new WorkspaceStore().Save(prior.Plan with { Id = taskId, Options = prior.Plan.Options with { WorkspaceDirectory = Path.Combine(reports, "cold-workspace"), UnityProject = project } });
+        foreach (var file in BundleExtractionBackend.ReadResult(prior)!.Files)
+        {
+            string destination = Path.Combine(Path.GetDirectoryName(saved.FilePath)!, "bundles", file.Group, Path.GetFileName(file.Path));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!); File.Copy(file.Path, destination, false);
+        }
+        var extracted = await new BundleExtractionBackend().ExecuteAsync(saved, progress, deadline.Token);
+        var inspected = await new ObjectWorkflow().ExecuteAsync(saved, "inspect", null, null, progress, deadline.Token);
+        var inventory = ObjectWorkflow.ReadInventory(saved, inspected.InventoryPath!);
+        var model = inventory.Objects.Single(o => o.IsModelCandidate && o.PathId == saved.Plan.RootPathId);
+        var sourceRig = inventory.Objects.Single(o => o.IsModelCandidate && o.Name == "SK_actor_female" && Path.GetFileName(o.SourceBundle) == "7cde33b2f3a520fa070d2454.ab");
+        var clips = new[] { "female_walk", "A_actor_chen_customized_state_walk_loop" }.Select(name => inventory.Objects.Single(o => o.Kind == "AnimationClip" && o.Name == name)).ToArray();
+        var prepared = await new ObjectWorkflow().ExecuteAsync(saved, "prepare", inspected.InventoryPath, new ObjectExportSelection(model.Key, model.LinkedAvatarKey, clips.Select(c => c.Key).ToList(),
+            new AnimationPreparationOptions { ModelImportScale = 100, SourceRigKey = sourceRig.Key, DropUnmatched = true }), progress, deadline.Token);
+        var generated = await new UnityAdaptationRunner().ExecuteAsync(saved, progress, deadline.Token);
+        Require(generated.Result.Adapted && generated.Result.ExpectedAdaptedClips == 2, "Shared Generic and dedicated Humanoid movement generated in clean project");
+        var native = JsonNode.Parse(File.ReadAllText(Path.Combine(project, prepared.UnityAssetRoot!, "Generated", "adaptation-result.json")))!;
+        Require(native["clips"]!.AsArray().Count(c => c!["humanoid"]!.GetValue<bool>()) == 1, "Clean package contains both playback modes");
+        JsonFiles.Write(Path.Combine(reports, "cold-workflow.json"), new { passed = true, project, saved.FilePath, extracted, inspected, model, sourceRig, clips, prepared, generated, playbackVerified = false });
     }
     else if (args[3] == "source-rig")
     {
@@ -201,8 +241,10 @@ try
             var plan = source.Plan with { Id = Guid.NewGuid(), Options = source.Plan.Options with { WorkspaceDirectory = Path.Combine(reports, "actors", actor, "workspace") }, Resources = [..source.Plan.Resources, shared],
                 RequestedResourceIds = [..source.Plan.RequestedResourceIds, shared.Id], Bundles = [..source.Plan.Bundles, sharedBundle] };
             bool reuse = args[3] is "actors-rig-retry" or "actors-rig-reprepare";
-            string? retryPath = reuse ? Directory.GetFiles(Path.Combine(reports, "actors", actor, "workspace", "tasks"), "plan.json", SearchOption.AllDirectories).Single() : null;
+            string marker = Path.Combine(priorReports, "actors", actor, "rig-plan-path.txt");
+            string? retryPath = reuse ? File.Exists(marker) ? File.ReadAllText(marker).Trim() : Directory.GetFiles(Path.Combine(priorReports, "actors", actor, "workspace", "tasks"), "plan.json", SearchOption.AllDirectories).Single() : null;
             var saved = reuse ? new SavedPlan(retryPath!, JsonFiles.Read<ExtractionPlan>(retryPath!)) : new WorkspaceStore().Save(plan);
+            Directory.CreateDirectory(Path.Combine(reports, "actors", actor));
             File.WriteAllText(Path.Combine(reports, "actors", actor, "rig-plan-path.txt"), saved.FilePath);
             if (!reuse)
             {

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -9,12 +10,13 @@ using EndfieldCharacterWorkbench.Editor;
 
 namespace EndfieldCharacterWorkbench.Verification
 {
-// Independent check of generated curves against the untouched source animation.
-// Does not call the retargeter and does not write generated assets.
+// Positive pose checks independently sample decoded key poses; negative cases
+// call the adapter only to assert rejection. Generated files remain unchanged.
 public static class UnitySharedRigVerification
 {
     [Serializable] class Request { public string directory = ""; public string[] configs = new string[0]; }
-    [Serializable] class Result { public string schema = "endfield-shared-rig-verification-v1", error; public bool passed; public List<Check> clips = new List<Check>(); public List<string> rejectedInvalidInputs = new List<string>(); }
+    [Serializable] class FileDigest { public string path, sha256, kind; }
+    [Serializable] class Result { public string schema = "endfield-shared-rig-verification-v1", error; public bool passed, inputsUnchanged, outputsUnchanged; public List<FileDigest> files = new List<FileDigest>(); public List<Check> clips = new List<Check>(); public List<string> directClips = new List<string>(), rejectedInvalidInputs = new List<string>(); }
     [Serializable] class BoneError { public string path; public float degrees, time; public Quaternion source, target; }
     [Serializable] class Check { public string config, clip, referencePolicy = "decoded-key-poses-with-constant-tangents-and-quaternion-continuity"; public int sampleCount, bodyBones, referenceTangentAdjustments; public float maxRotationError, maxPrimarySegmentAngle, sourceKeyPoseMaxError, maxLeftArmElevation = -90, maxRightArmElevation = -90; public string worstBone; public List<BoneError> errors = new List<BoneError>(); }
     public static void Run()
@@ -31,10 +33,25 @@ public static class UnitySharedRigVerification
                 var config = JsonUtility.FromJson<CharacterAnimationAdapter.Config>(File.ReadAllText(configPath));
                 var report = JsonUtility.FromJson<CharacterAnimationAdapter.BuildReport>(File.ReadAllText(root + "/Generated/adaptation-result.json"));
                 if (!report.adapted) throw new Exception("Generation failed: " + configPath);
+                foreach (var input in config.inputs)
+                {
+                    string path = Path.GetFullPath(Path.Combine(root, input.path));
+                    if (!path.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new Exception("Input outside package");
+                    if (Digest(path) != input.sha256) throw new Exception("Input digest differs: " + input.path);
+                    result.files.Add(new FileDigest { path = path, sha256 = input.sha256, kind = "input" });
+                }
+                foreach (var output in report.outputs)
+                {
+                    string path = Path.GetFullPath(output.path);
+                    if (!path.StartsWith(Path.GetFullPath(root + "/Generated") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || Digest(path) != output.sha256)
+                        throw new Exception("Output digest differs: " + output.path);
+                    result.files.Add(new FileDigest { path = path, sha256 = output.sha256, kind = "output" });
+                }
                 foreach (var input in config.clips)
                 {
-                    var evidence = JsonUtility.FromJson<CharacterAnimationAdapter.RigEvidence>(File.ReadAllText(root + "/" + input.sourceRig));
                     var detail = report.clips.Single(c => c.id == input.id);
+                    if (detail.humanoid || detail.retargetMode == "direct") { result.directClips.Add(input.name); continue; }
+                    var evidence = JsonUtility.FromJson<CharacterAnimationAdapter.RigEvidence>(File.ReadAllText(root + "/" + input.sourceRig));
                     if (detail.worldBodyPaths.Count < 15 || detail.bodyAxisChecks.Count < 8) throw new Exception("Missing body/axis audit");
                     int tangentAdjustments;
                     float keyPoseError;
@@ -96,11 +113,20 @@ public static class UnitySharedRigVerification
                     finally { UnityEngine.Object.DestroyImmediate(source); UnityEngine.Object.DestroyImmediate(target); UnityEngine.Object.DestroyImmediate(sourceClip); }
                 }
             }
+            foreach (var file in result.files)
+                if (Digest(file.path) != file.sha256) throw new Exception("Verification changed a package file: " + file.path);
+            result.inputsUnchanged = true; result.outputsUnchanged = true;
+            if (result.clips.Count == 0) throw new Exception("No shared retargeted clip to verify");
             result.passed = result.clips.Count > 0;
         }
         catch (Exception error) { result.error = error.ToString(); }
         finally { EditorSceneManager.ClosePreviewScene(scene); File.WriteAllText(Path.Combine(request.directory, "shared-rig-verification.json"), JsonUtility.ToJson(result, true)); }
         EditorApplication.Exit(result.passed ? 0 : 1);
+    }
+    static string Digest(string path)
+    {
+        using (var stream = File.OpenRead(path))
+        using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
     }
     static AnimationClip ReferenceClip(AnimationClip raw, IEnumerable<string> bodyPaths, out int adjustments, out float keyPoseError)
     {

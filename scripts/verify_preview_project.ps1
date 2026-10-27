@@ -12,6 +12,11 @@ $projectRoot = [IO.Path]::GetFullPath($Project)
 if (-not $projectRoot.StartsWith('D:\AAAChatGPT\UnityValidation\', [StringComparison]::OrdinalIgnoreCase)) {
     throw '此验证入口只操作独立验证工程，不操作用户工程。'
 }
+$projectLock = Join-Path $projectRoot 'Temp/UnityLockfile'
+if (Test-Path -LiteralPath $projectLock -PathType Leaf) {
+    try { $lockProbe = [IO.File]::Open($projectLock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $lockProbe.Dispose() }
+    catch { throw '此独立验收工程正在 Unity 中使用，请先保存并关闭该工程。其他工程无需关闭。' }
+}
 $repo = Split-Path -Parent $PSScriptRoot
 $reports = [IO.Path]::GetFullPath($ReportDirectory)
 New-Item -ItemType Directory -Path $reports -Force | Out-Null
