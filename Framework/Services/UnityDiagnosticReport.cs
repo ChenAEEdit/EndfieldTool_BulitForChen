@@ -53,7 +53,8 @@ public static class UnityDiagnosticReport
         foreach (var clip in report.GetProperty("clips").EnumerateArray())
         {
             text.AppendLine("\n### " + Escape(Value(clip, "name")) + "\n\n源骨架：" + Escape(Value(clip, "sourceRigName")) + "；换算：" + Escape(Value(clip, "retargetMode")) + "；生成：" + Value(clip, "adapted") + "。\n");
-            text.AppendLine("生成后的主体姿态核对：" + Value(clip, "retargetPoseChecked") + "；25 个时刻最大世界旋转误差：" + Value(clip, "retargetMaxRotationError") + "°。参考保留解码关键帧的时间和数值，在内存中将非有限切线显式设为阶跃，调整数：" + Value(clip, "samplingTangentAdjustments") + "；原始文件不变。该检查不等于原游戏 IK、布料与最终画面完全还原。\n");
+            if (Value(clip, "retargetMode") != "direct")
+                text.AppendLine("生成后的主体姿态核对：" + Value(clip, "retargetPoseChecked") + "；25 个时刻最大世界旋转误差：" + Value(clip, "retargetMaxRotationError") + "°。参考保留解码关键姿态，在内存中将非有限切线显式设为阶跃并统一四元数连续性，切线调整数：" + Value(clip, "samplingTangentAdjustments") + "；原始文件不变。该检查不等于原游戏 IK、布料与最终画面完全还原。\n");
             if (!clip.TryGetProperty("tracks", out var tracks)) { text.AppendLine("旧版本没有逐轨道记录。\n"); continue; }
             bool adapted = clip.GetProperty("adapted").GetBoolean();
             text.AppendLine("| 源哈希 | 源路径 | 属性／组件 | 目标路径 | 处理计划 | 原因 |\n| --- | --- | --- | --- | --- | --- |");

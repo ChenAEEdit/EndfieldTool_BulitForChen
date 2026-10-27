@@ -16,7 +16,7 @@ public static class UnitySharedRigVerification
     [Serializable] class Request { public string directory = ""; public string[] configs = new string[0]; }
     [Serializable] class Result { public string schema = "endfield-shared-rig-verification-v1", error; public bool passed; public List<Check> clips = new List<Check>(); public List<string> rejectedInvalidInputs = new List<string>(); }
     [Serializable] class BoneError { public string path; public float degrees, time; public Quaternion source, target; }
-    [Serializable] class Check { public string config, clip, referencePolicy = "decoded-key-values-with-explicit-constant-tangent-modes"; public int sampleCount, bodyBones, referenceTangentAdjustments; public float maxRotationError, maxPrimarySegmentAngle, maxLeftArmElevation = -90, maxRightArmElevation = -90; public string worstBone; public List<BoneError> errors = new List<BoneError>(); }
+    [Serializable] class Check { public string config, clip, referencePolicy = "decoded-key-poses-with-constant-tangents-and-quaternion-continuity"; public int sampleCount, bodyBones, referenceTangentAdjustments; public float maxRotationError, maxPrimarySegmentAngle, sourceKeyPoseMaxError, maxLeftArmElevation = -90, maxRightArmElevation = -90; public string worstBone; public List<BoneError> errors = new List<BoneError>(); }
     public static void Run()
     {
         var request = JsonUtility.FromJson<Request>(File.ReadAllText(Environment.GetEnvironmentVariable("ENDFIELD_SHARED_RIG_CHECK")));
@@ -37,7 +37,8 @@ public static class UnitySharedRigVerification
                     var detail = report.clips.Single(c => c.id == input.id);
                     if (detail.worldBodyPaths.Count < 15 || detail.bodyAxisChecks.Count < 8) throw new Exception("Missing body/axis audit");
                     int tangentAdjustments;
-                    var sourceClip = ReferenceClip(AssetDatabase.LoadAssetAtPath<AnimationClip>(root + "/" + input.source), out tangentAdjustments);
+                    float keyPoseError;
+                    var sourceClip = ReferenceClip(AssetDatabase.LoadAssetAtPath<AnimationClip>(root + "/" + input.source), detail.worldBodyPaths, out tangentAdjustments, out keyPoseError);
                     var outputClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(detail.output);
                     var source = new GameObject("UnmodifiedSource");
                     UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(source, scene);
@@ -63,7 +64,7 @@ public static class UnitySharedRigVerification
                         var targets = target.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, target.transform));
                         var pairs = detail.worldBodyPaths.Select(path => new { path, source = nodes[path], target = targets.Single(p => p.Key == path || p.Key.EndsWith("/" + path, StringComparison.Ordinal)).Value }).ToArray();
                         var allRest = nodes.Values.Concat(targets.Values).Select(t => new { t, p = t.localPosition, q = t.localRotation, s = t.localScale }).ToArray();
-                        var check = new Check { config = configPath, clip = input.name, bodyBones = pairs.Length, sampleCount = 25, referenceTangentAdjustments = tangentAdjustments };
+                        var check = new Check { config = configPath, clip = input.name, bodyBones = pairs.Length, sampleCount = 25, referenceTangentAdjustments = tangentAdjustments, sourceKeyPoseMaxError = keyPoseError };
                         result.clips.Add(check);
                         for (int frame = 0; frame < check.sampleCount; frame++)
                         {
@@ -101,7 +102,7 @@ public static class UnitySharedRigVerification
         finally { EditorSceneManager.ClosePreviewScene(scene); File.WriteAllText(Path.Combine(request.directory, "shared-rig-verification.json"), JsonUtility.ToJson(result, true)); }
         EditorApplication.Exit(result.passed ? 0 : 1);
     }
-    static AnimationClip ReferenceClip(AnimationClip raw, out int adjustments)
+    static AnimationClip ReferenceClip(AnimationClip raw, IEnumerable<string> bodyPaths, out int adjustments, out float keyPoseError)
     {
         // Independent implementation of the stated reference policy. Raw file,
         // key values and times are preserved; invalid tangent metadata is explicit.
@@ -121,6 +122,23 @@ public static class UnitySharedRigVerification
             }
             if (curve.keys.Where((k, i) => k.time != original.keys[i].time || k.value != original.keys[i].value).Any()) throw new Exception("Reference changed source key values");
             AnimationUtility.SetEditorCurve(reference, binding, curve);
+        }
+        var snapshots = bodyPaths.Select(path => new {
+            path,
+            curves = "xyzw".Select(axis => AnimationUtility.GetEditorCurve(reference, EditorCurveBinding.FloatCurve(path, typeof(Transform), "m_LocalRotation." + axis))).ToArray()
+        }).Select(row => new { row.path, times = row.curves.SelectMany(c => c.keys.Select(k => k.time)).Distinct().ToArray(), row.curves }).ToArray();
+        reference.EnsureQuaternionContinuity(); keyPoseError = 0;
+        foreach (var row in snapshots)
+        {
+            var after = "xyzw".Select(axis => AnimationUtility.GetEditorCurve(reference, EditorCurveBinding.FloatCurve(row.path, typeof(Transform), "m_LocalRotation." + axis))).ToArray();
+            foreach (float time in row.times)
+            {
+                var beforeQ = new Quaternion(row.curves[0].Evaluate(time), row.curves[1].Evaluate(time), row.curves[2].Evaluate(time), row.curves[3].Evaluate(time));
+                var afterQ = new Quaternion(after[0].Evaluate(time), after[1].Evaluate(time), after[2].Evaluate(time), after[3].Evaluate(time));
+                float angle = Quaternion.Angle(beforeQ.normalized, afterQ.normalized);
+                if (float.IsNaN(angle) || angle > .1f) throw new Exception("Reference changed a decoded key pose: " + row.path);
+                keyPoseError = Mathf.Max(keyPoseError, angle);
+            }
         }
         return reference;
     }

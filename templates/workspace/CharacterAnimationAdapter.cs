@@ -49,7 +49,7 @@ public static class CharacterAnimationAdapter
         public bool retargetPoseChecked;
         public float retargetMaxRotationError;
         public int samplingTangentAdjustments;
-        public string samplingReferencePolicy = "decoded-key-values-with-explicit-constant-tangent-modes";
+        public string samplingReferencePolicy = "decoded-key-poses-with-constant-tangents-and-quaternion-continuity";
         public List<string> sourceRestMissing = new List<string>();
         public List<string> worldBodyPaths = new List<string>();
         public List<string> serializedReferencePaths = new List<string>();
@@ -432,6 +432,12 @@ public static class CharacterAnimationAdapter
             if (missing.Count > 0 && !rules.dropUnmatched) throw new Exception("存在未匹配或不唯一的路径；请核对报告，或明确选择忽略未匹配轨道。");
             if (bindings.Count == 0) throw new Exception("没有可绑定的 Transform 动画曲线。");
             AnimationUtility.SetEditorCurves(clip, bindings.ToArray(), curves.ToArray());
+            if (convertedSource)
+            {
+                try { VerifyRetargetedClip(target, source, clip, sourceRig, report); }
+                catch (Exception error) { throw new Exception("旋转连续性处理前：" + error.Message); }
+                report.retargetPoseChecked = false; report.retargetMaxRotationError = 0;
+            }
             clip.EnsureQuaternionContinuity();
             var settings = AnimationUtility.GetAnimationClipSettings(source);
             settings.loopTime = rules.forceLoop || settings.loopTime;
@@ -573,6 +579,7 @@ public static class CharacterAnimationAdapter
                 curves.Add(curve);
             }
             AnimationUtility.SetEditorCurves(clip, bindings, curves.ToArray());
+            clip.EnsureQuaternionContinuity();
             return clip;
         }
         catch { UnityEngine.Object.DestroyImmediate(clip); throw; }
