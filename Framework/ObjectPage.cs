@@ -39,6 +39,7 @@ internal sealed partial class WorkspaceForm
         layout.Controls.Add(objectInfo, 0, 0);
         var actions = Flow();
         actions.Controls.Add(ActionButton("载入所选任务", () => RunAction(LoadSavedObjects)));
+        actions.Controls.Add(ActionButton("自动关联专属待机", () => RunAction(SelectAssociatedIdleSet)));
         actions.Controls.Add(exportObjects); objectActions.Add(exportObjects);
         layout.Controls.Add(actions, 0, 1);
         var selectors = Grid(2, 2);
@@ -201,6 +202,26 @@ internal sealed partial class WorkspaceForm
     private void SetClipChecks(bool value)
     {
         for (int i = 0; i < clipRows.Items.Count; i++) clipRows.SetItemChecked(i, value);
+    }
+
+    private void SelectAssociatedIdleSet()
+    {
+        if (objectInventory == null || inventoryTask == null) throw new InvalidDataException("请先载入角色对象列表。");
+        var resolved = CharacterAssociationResolver.Resolve(objectInventory, inventoryTask.Plan.CharacterId);
+        int modelIndex = Enumerable.Range(1, modelChoice.Items.Count - 1)
+            .FirstOrDefault(index => (modelChoice.Items[index] as ObjectChoice)?.Row?.Key == resolved.Model.Key);
+        int avatarIndex = Enumerable.Range(1, avatarChoice.Items.Count - 1)
+            .FirstOrDefault(index => (avatarChoice.Items[index] as ObjectChoice)?.Row?.Key == resolved.Avatar.Key);
+        if (modelIndex == 0 || avatarIndex == 0) throw new InvalidDataException("关联结果不在当前模型或 Avatar 选择列表中，请重新解析对象。");
+
+        modelChoice.SelectedIndex = modelIndex;
+        avatarChoice.SelectedIndex = avatarIndex;
+        checkedClips.Clear();
+        checkedClips.UnionWith(resolved.Clips.Select(row => row.Key));
+        PopulateObjects();
+        objectDetails.Text = "自动关联依据：唯一独立模型根节点 → 模型实际 Animator Avatar/Controller 引用 → Controller 实际引用的待机动画。"
+            + $"\r\n控制器：{resolved.ControllerKey}；引用动画：{resolved.ReferencedClipCount}；已选择待机：{string.Join("、", resolved.Clips.Select(row => row.Name))}。"
+            + "\r\n源骨架归属未由控制器关联证明；共享走路仍需单独选择有证据的来源。";
     }
 
     private ObjectOperationResult CurrentObjectResult() => inventoryTask == null

@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>EndfieldChenTool</AssemblyName>
-    <Version>0.12.0</Version>
-    <InformationalVersion>0.12.0-shared-rig-audit</InformationalVersion>
+    <Version>0.13.0</Version>
+    <InformationalVersion>0.13.0-role-unit-inference</InformationalVersion>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <DefaultItemExcludes>$(DefaultItemExcludes);templates/**;runtime/**;licenses/**;sources/**;Crypto/**</DefaultItemExcludes>
   </PropertyGroup>

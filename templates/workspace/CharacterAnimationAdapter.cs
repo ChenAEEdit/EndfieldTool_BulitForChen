@@ -16,7 +16,7 @@ public static class CharacterAnimationAdapter
     [Serializable] public class Rules
     {
         public float positionScale = 1;
-        public bool dropUnmatched, dropSceneTranslation = true, forceLoop;
+        public bool dropUnmatched, dropSceneTranslation = true, forceLoop, inferUnits;
         public string normalizeRoot = "";
         public string[] excludedDescendants = new string[0];
         public string[] excludedNodes = new string[0];
@@ -26,7 +26,7 @@ public static class CharacterAnimationAdapter
     [Serializable] public class Preview { public bool enabled; }
     [Serializable] public class Config
     {
-        public string schema, taskId, runId, model, adapterVersion;
+        public string schema, taskId, runId, model, adapterVersion, targetRig, humanMappings;
         public float modelImportScale = 1;
         public Rules rules;
         public ClipInput[] clips;
@@ -107,8 +107,28 @@ public static class CharacterAnimationAdapter
         public MaterialPreview[] materials = new MaterialPreview[0];
         public Diagnostics diagnostics;
         public float modelImportScale, positionScale;
+        public UnitInferenceReport unitInference;
         public string humanAvatar, humanMappingSource;
     }
+
+    [Serializable] public class UnitInferenceReport
+    {
+        public bool enabled, passed;
+        public string method = "skin-bind-segment-lengths-and-semantic-body-animation-curves";
+        public string targetRigEvidence, humanMappingEvidence, error = "";
+        public float initialFileScale, modelImportScale, modelRatioDeviation, correctedRelativeError, sharedPositionScale;
+        public int measuredModelSegments;
+        public List<ClipUnitMeasurement> clips = new List<ClipUnitMeasurement>();
+    }
+    [Serializable] public class ClipUnitMeasurement
+    {
+        public string id, name, status = "insufficient-evidence";
+        public float positionScale, ratioDeviation;
+        public int measuredSegments;
+    }
+    [Serializable] class UnitHumanMappings { public string schema = ""; public UnitHumanMapping[] candidates = new UnitHumanMapping[0]; }
+    [Serializable] class UnitHumanMapping { public string name = "", sourceAsset = "", pathId = ""; public UnitHumanBone[] bones = new UnitHumanBone[0]; }
+    [Serializable] class UnitHumanBone { public string m_BoneName = "", m_HumanName = ""; }
 
     [Serializable] public class BatchReceipt
     {
@@ -236,7 +256,7 @@ public static class CharacterAnimationAdapter
         }
         if (report.clips.Any(item => item.humanoid) && (report.humanAvatar != generated + "/CharacterHumanAvatar.asset" || !outputs.Contains(report.humanAvatar)))
             throw new Exception("人形动画缺少配套 Avatar，请保留原包并重新生成。");
-        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0")
+        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0")
         {
             var expected = new HashSet<string>(config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs)
                 .Concat(new[] { "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs", "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs" })
@@ -345,9 +365,14 @@ public static class CharacterAnimationAdapter
         report.sourceObjectBindings = AnimationUtility.GetObjectReferenceCurveBindings(source).Length;
         report.tracks = sourceBindings.Select(binding => new TrackAudit { sourcePath = binding.path, property = binding.propertyName,
             component = binding.type.FullName, keys = AnimationUtility.GetEditorCurve(source, binding)?.length ?? 0 }).ToList();
+        var missing = new HashSet<string>();
         foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(source))
+        {
+            bool omit = rules.dropUnmatched;
+            if (!omit) missing.Add(binding.path);
             report.tracks.Add(new TrackAudit { sourcePath = binding.path, property = binding.propertyName, component = binding.type.FullName,
-                keys = AnimationUtility.GetObjectReferenceCurve(source, binding).Length, decision = "omit", reason = "unsupported-object-reference-track" });
+                keys = AnimationUtility.GetObjectReferenceCurve(source, binding).Length, decision = omit ? "omit" : "reject", reason = "unsupported-object-reference-track" });
+        }
         if (!(rules.positionScale > 0) || !Finite(rules.positionScale)) throw new Exception("动画位置倍率无效。");
         var transforms = target.GetComponentsInChildren<Transform>(true);
         var paths = transforms.Select(t => AnimationUtility.CalculateTransformPath(t, target.transform)).ToArray();
@@ -358,7 +383,6 @@ public static class CharacterAnimationAdapter
             ?? throw new Exception("排除节点不存在或不唯一：" + path)));
         string normalized = string.IsNullOrEmpty(rules.normalizeRoot) ? null : MatchPath(rules.normalizeRoot, paths)
             ?? throw new Exception("根位移归零路径不存在或不唯一。");
-        var missing = new HashSet<string>();
         var bindings = new List<EditorCurveBinding>();
         var curves = new List<AnimationCurve>();
         var clip = new AnimationClip { name = source.name + "_Direct", frameRate = source.frameRate, legacy = false };
@@ -372,8 +396,16 @@ public static class CharacterAnimationAdapter
                 var binding = sourceBindings[bindingIndex];
                 var audit = report.tracks[bindingIndex];
                 bool muscleBinding = binding.type == typeof(Animator);
-                if (muscleBinding && !humanoid) { report.skippedAnimator++; audit.decision = "omit"; audit.reason = "animator-track-in-generic-mode"; continue; }
-                if (binding.type != typeof(Transform) && !muscleBinding) { report.skippedOther++; audit.decision = "omit"; audit.reason = "unsupported-component-track"; continue; }
+                if (muscleBinding && !humanoid)
+                {
+                    report.skippedAnimator++; missing.Add(binding.path);
+                    audit.decision = rules.dropUnmatched ? "omit" : "reject"; audit.reason = "animator-track-in-generic-mode"; continue;
+                }
+                if (binding.type != typeof(Transform) && !muscleBinding)
+                {
+                    report.skippedOther++; missing.Add(binding.path);
+                    audit.decision = rules.dropUnmatched ? "omit" : "reject"; audit.reason = "unsupported-component-track"; continue;
+                }
                 bool position = binding.propertyName.StartsWith("m_LocalPosition.", StringComparison.Ordinal);
                 if (rules.dropSceneTranslation && position && string.IsNullOrEmpty(binding.path))
                 { report.droppedSceneTranslation++; audit.decision = "omit"; audit.reason = "scene-translation-disabled"; continue; }
@@ -813,6 +845,137 @@ public static class CharacterAnimationAdapter
         return avatar;
     }
 
+    static float Median(IEnumerable<float> values)
+    {
+        var ordered = values.OrderBy(value => value).ToArray();
+        if (ordered.Length == 0) throw new Exception("没有可用于倍率推导的测量值。");
+        return ordered[ordered.Length / 2];
+    }
+
+    static UnitInferenceReport InferUnitScales(Config config, string basePath, string modelPath, ModelImporter importer)
+    {
+        var report = new UnitInferenceReport { enabled = true,
+            targetRigEvidence = config.targetRig, humanMappingEvidence = config.humanMappings,
+            initialFileScale = importer.fileScale };
+        try
+        {
+            if (string.IsNullOrEmpty(config.targetRig) || string.IsNullOrEmpty(config.humanMappings))
+                throw new Exception("适配包缺少目标骨架或语义映射证据；请重新解析并导出对象。");
+            var rig = JsonUtility.FromJson<RigEvidence>(File.ReadAllText(Local(basePath, config.targetRig)));
+            if (rig == null || rig.schema != "endfield-rig-evidence-v1" || rig.nodes == null || rig.nodes.Length == 0)
+                throw new Exception("目标模型骨架证据格式无效。");
+            var nodes = rig.nodes.ToDictionary(node => node.path, StringComparer.Ordinal);
+            var worlds = new Dictionary<string, Matrix4x4>(StringComparer.Ordinal);
+            foreach (var node in rig.nodes.OrderBy(node => node.path.Count(c => c == '/')).ThenBy(node => node.path.Length))
+            {
+                if (string.IsNullOrEmpty(node.path)) worlds[node.path] = Matrix4x4.identity;
+                else
+                {
+                    if (node.parent == null || !worlds.TryGetValue(node.parent, out var parent))
+                        throw new Exception("目标骨架层级证据不完整：" + node.path);
+                    worlds[node.path] = parent * Matrix4x4.TRS(node.position, node.rotation, node.scale);
+                }
+            }
+            var mappings = JsonUtility.FromJson<UnitHumanMappings>(File.ReadAllText(Local(basePath, config.humanMappings)));
+            if (mappings == null || mappings.schema != "endfield-human-mapping-candidates-v1" || mappings.candidates == null)
+                throw new Exception("目标模型语义映射证据格式无效。");
+
+            importer.globalScale = 1;
+            importer.SaveAndReimport();
+            Func<Dictionary<string, float>> measureModel = () =>
+            {
+                var model = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
+                if (!model) throw new Exception("倍率测量时无法载入目标模型。");
+                var transforms = model.GetComponentsInChildren<Transform>(true)
+                    .ToDictionary(transform => AnimationUtility.CalculateTransformPath(transform, model.transform), StringComparer.Ordinal);
+                var ratios = new Dictionary<string, float>(StringComparer.Ordinal);
+                foreach (var node in rig.nodes.Where(node => node.reference == "skin-bind-pose" && !string.IsNullOrEmpty(node.parent)
+                    && nodes.TryGetValue(node.parent, out var parent) && parent.reference == "skin-bind-pose"))
+                {
+                    if (!transforms.TryGetValue(node.path, out var child) || !transforms.TryGetValue(node.parent, out var parent)) continue;
+                    float expected = Vector3.Distance(worlds[node.path].MultiplyPoint3x4(Vector3.zero), worlds[node.parent].MultiplyPoint3x4(Vector3.zero));
+                    float actual = Vector3.Distance(child.position, parent.position);
+                    if (expected > .02f && actual > .0000001f && Finite(expected) && Finite(actual)) ratios[node.path] = expected / actual;
+                }
+                return ratios;
+            };
+            var before = measureModel();
+            if (before.Count < 15) throw new Exception("用于模型倍率推导的骨段不足 15 条。");
+            float modelRatio = Median(before.Values);
+            report.measuredModelSegments = before.Count;
+            report.modelRatioDeviation = before.Values.Max(value => Mathf.Abs(value / modelRatio - 1));
+            if (!Finite(modelRatio) || modelRatio < .0001f || modelRatio > 10000 || report.modelRatioDeviation > .01f)
+                throw new Exception("模型骨段倍率不一致或超出有效范围；已停止自动推导。");
+            float decimalScale = Mathf.Pow(10, Mathf.Round(Mathf.Log10(modelRatio)));
+            config.modelImportScale = Mathf.Abs(decimalScale / modelRatio - 1) < .0001f ? decimalScale : modelRatio;
+            importer.globalScale = config.modelImportScale;
+            importer.SaveAndReimport();
+            var after = measureModel();
+            report.correctedRelativeError = after.Values.Max(value => Mathf.Abs(value - 1));
+            if (after.Count < 15 || report.correctedRelativeError > .01f)
+                throw new Exception("模型倍率复测误差超过 1%；已停止生成。");
+
+            var rigNodeNames = rig.nodes.GroupBy(node => node.path.Split('/').Last(), StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+            var matching = mappings.candidates.Where(candidate => candidate.bones != null && candidate.bones.Length >= 15
+                && candidate.bones.All(bone => rigNodeNames.TryGetValue(bone.m_BoneName, out int count) && count == 1))
+                .GroupBy(candidate => string.Join("|", candidate.bones.OrderBy(bone => bone.m_HumanName)
+                    .Select(bone => bone.m_HumanName + ":" + bone.m_BoneName)), StringComparer.Ordinal).ToArray();
+            if (matching.Length != 1) throw new Exception("主体语义骨骼映射缺失或有歧义；已停止动画倍率推导。");
+            var bodyNames = new HashSet<string>(matching[0].First().bones.Select(bone => bone.m_BoneName), StringComparer.Ordinal);
+            var perClipScales = new List<float>();
+            foreach (var input in config.clips)
+            {
+                var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(Local(basePath, input.source));
+                if (!clip) throw new Exception("无法载入动画以推导位置倍率：" + input.name);
+                var item = new ClipUnitMeasurement { id = input.id, name = input.name };
+                report.clips.Add(item);
+                var ratios = new List<float>();
+                foreach (var group in AnimationUtility.GetCurveBindings(clip)
+                    .Where(binding => binding.type == typeof(Transform) && binding.propertyName.StartsWith("m_LocalPosition.", StringComparison.Ordinal))
+                    .GroupBy(binding => binding.path, StringComparer.Ordinal))
+                {
+                    if (!bodyNames.Contains(group.Key.Split('/').Last()) || !nodes.TryGetValue(group.Key, out var node)
+                        || node.reference != "skin-bind-pose" || node.position.magnitude < .05f) continue;
+                    var channels = group.ToDictionary(binding => binding.propertyName,
+                        binding => AnimationUtility.GetEditorCurve(clip, binding), StringComparer.Ordinal);
+                    if (!channels.ContainsKey("m_LocalPosition.x") || !channels.ContainsKey("m_LocalPosition.y") || !channels.ContainsKey("m_LocalPosition.z")) continue;
+                    var values = Enumerable.Range(0, 25).Select(index =>
+                    {
+                        float time = clip.length * index / 24f;
+                        return new Vector3(channels["m_LocalPosition.x"].Evaluate(time), channels["m_LocalPosition.y"].Evaluate(time),
+                            channels["m_LocalPosition.z"].Evaluate(time)).magnitude;
+                    }).ToArray();
+                    if (values.Any(value => !Finite(value) || value < .000001f)) continue;
+                    float length = Median(values);
+                    if (values.Max(value => Mathf.Abs(value / length - 1)) > .01f) continue;
+                    ratios.Add(node.position.magnitude / length);
+                }
+                item.measuredSegments = ratios.Count;
+                if (ratios.Count < 8) throw new Exception("动画主体位置倍率证据少于 8 条骨段：" + input.name);
+                item.positionScale = Median(ratios);
+                item.ratioDeviation = ratios.Max(value => Mathf.Abs(value / item.positionScale - 1));
+                if (!Finite(item.positionScale) || item.positionScale < .0001f || item.positionScale > 10000 || item.ratioDeviation > .01f)
+                    throw new Exception("动画位置倍率测量不一致：" + input.name);
+                item.status = "measured";
+                perClipScales.Add(item.positionScale);
+            }
+            if (perClipScales.Count == 0 || perClipScales.Max() / perClipScales.Min() > 1.01f)
+                throw new Exception("所选动画的位置倍率彼此不一致；请分批生成并复测。");
+            config.rules.positionScale = Median(perClipScales);
+            if (Mathf.Abs(config.rules.positionScale - 1) < .0001f) config.rules.positionScale = 1;
+            report.modelImportScale = config.modelImportScale;
+            report.sharedPositionScale = config.rules.positionScale;
+            report.passed = true;
+            return report;
+        }
+        catch (Exception error)
+        {
+            report.error = error.Message;
+            throw new Exception("自动单位推导失败：" + error.Message, error);
+        }
+    }
+
     public static void Build(string configPath, string invocationId = "")
     {
         configPath = configPath.Replace('\\', '/');
@@ -836,15 +999,23 @@ public static class CharacterAnimationAdapter
             throw new Exception("本包已生成内容。请重新生成独立适配包，保留已有修改。");
         File.WriteAllText(reportPath, JsonUtility.ToJson(report, true));
         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        string modelPath = Local(basePath, config.model);
+        var importer = AssetImporter.GetAtPath(modelPath) as ModelImporter;
         var scene = EditorSceneManager.NewPreviewScene();
         var details = new List<ClipReport>(); var outputs = new List<string>();
         try
         {
+            if (importer == null) throw new Exception("模型未被 Unity 导入。");
             foreach (var input in config.inputs)
                 if (Hash(Local(basePath, input.path)) != input.sha256) throw new Exception("输入文件摘要已变化：" + input.path);
-            string modelPath = Local(basePath, config.model);
-            var importer = AssetImporter.GetAtPath(modelPath) as ModelImporter;
-            if (importer == null) throw new Exception("模型未被 Unity 导入。");
+            if (config.rules.inferUnits)
+            {
+                report.unitInference = InferUnitScales(config, basePath, modelPath, importer);
+                report.modelImportScale = config.modelImportScale;
+                report.positionScale = config.rules.positionScale;
+                File.WriteAllText(generated + "/unit-inference.json", JsonUtility.ToJson(report.unitInference, true));
+                outputs.Add(generated + "/unit-inference.json");
+            }
             if (!(config.modelImportScale > 0) || !Finite(config.modelImportScale)) throw new Exception("模型单位倍率无效。");
             importer.importAnimation = false; importer.animationType = ModelImporterAnimationType.Generic;
             importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel; importer.optimizeGameObjects = false;
@@ -934,7 +1105,7 @@ public static class CharacterAnimationAdapter
             report.status = report.adapted ? "adapted_unverified" : "partial";
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             report.outputs = outputs.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
-            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0")
+            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0")
             {
                 var metadataPaths = config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs).Concat(new[] {
                     "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs",

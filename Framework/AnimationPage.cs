@@ -8,6 +8,7 @@ internal sealed partial class WorkspaceForm
 {
     private readonly NumericUpDown modelImportScale = ScaleInput();
     private readonly NumericUpDown animationPositionScale = ScaleInput();
+    private readonly CheckBox inferUnits = new() { Text = "根据蒙皮绑定与动画曲线自动推导倍率（证据不足时停止）", Checked = true, AutoSize = true };
     private readonly ComboBox sourceRigChoice = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DropDownWidth = 900 };
     private readonly TextBox normalizeRoot = new() { Dock = DockStyle.Fill, PlaceholderText = "可选，例如 Root；将该节点的位置减去首帧偏移" };
     private readonly TextBox excludedDescendants = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical };
@@ -53,15 +54,18 @@ internal sealed partial class WorkspaceForm
         advanced.RowStyles.Add(new(SizeType.Absolute, 278));
         advanced.RowStyles.Add(new(SizeType.Absolute, 100));
         advanced.RowStyles.Add(new(SizeType.Percent, 100));
-        var settings = Grid(2, 6);
+        var settings = Grid(2, 7);
         settings.ColumnStyles.Add(new(SizeType.Absolute, 110)); settings.ColumnStyles.Add(new(SizeType.Percent, 100));
-        foreach (var height in new[] { 34, 34, 38, 67, 67, 38 }) settings.RowStyles.Add(new(SizeType.Absolute, height));
+        foreach (var height in new[] { 34, 34, 30, 38, 67, 67, 38 }) settings.RowStyles.Add(new(SizeType.Absolute, height));
         settings.Controls.Add(Note("模型倍率"), 0, 0); settings.Controls.Add(modelImportScale, 1, 0);
         settings.Controls.Add(Note("位置倍率"), 0, 1); settings.Controls.Add(animationPositionScale, 1, 1);
-        settings.Controls.Add(Note("位移归零节点"), 0, 2); settings.Controls.Add(normalizeRoot, 1, 2);
-        settings.Controls.Add(Note("排除后代路径"), 0, 3); settings.Controls.Add(excludedDescendants, 1, 3);
-        settings.Controls.Add(Note("排除节点路径"), 0, 4); settings.Controls.Add(excludedNodes, 1, 4);
-        settings.Controls.Add(Note("源骨架候选"), 0, 5); settings.Controls.Add(sourceRigChoice, 1, 5);
+        settings.Controls.Add(inferUnits, 1, 2);
+        settings.Controls.Add(Note("位移归零节点"), 0, 3); settings.Controls.Add(normalizeRoot, 1, 3);
+        settings.Controls.Add(Note("排除后代路径"), 0, 4); settings.Controls.Add(excludedDescendants, 1, 4);
+        settings.Controls.Add(Note("排除节点路径"), 0, 5); settings.Controls.Add(excludedNodes, 1, 5);
+        settings.Controls.Add(Note("源骨架候选"), 0, 6); settings.Controls.Add(sourceRigChoice, 1, 6);
+        inferUnits.CheckedChanged += (_, _) => { modelImportScale.Enabled = animationPositionScale.Enabled = !inferUnits.Checked; };
+        modelImportScale.Enabled = animationPositionScale.Enabled = !inferUnits.Checked;
         advanced.Controls.Add(settings, 0, 0);
         var flags = Flow(); flags.Controls.AddRange([dropUnmatched, dropSceneTranslation, forceLoop, createPreviewScene]);
         advanced.Controls.Add(flags, 0, 1);
@@ -118,11 +122,17 @@ internal sealed partial class WorkspaceForm
         try
         {
             var report = UnityDiagnosticReport.ReadVerifiedReport(saved);
+            if (report.TryGetProperty("unitInference", out var units) && units.ValueKind == System.Text.Json.JsonValueKind.Object
+                && units.TryGetProperty("passed", out var passed) && passed.GetBoolean())
+            {
+                audit = $"倍率推导：模型 {units.GetProperty("modelImportScale").GetSingle():g6}，动画位置 {units.GetProperty("sharedPositionScale").GetSingle():g6}；"
+                    + $"依据 {units.GetProperty("measuredModelSegments").GetInt32()} 条模型骨段和 {units.GetProperty("clips").GetArrayLength()} 条动画的主体骨段测量。\r\n";
+            }
             var tracks = report.GetProperty("clips").EnumerateArray().SelectMany(c => c.TryGetProperty("tracks", out var t) ? t.EnumerateArray().ToArray() : []).ToArray();
             if (tracks.Length > 0)
             {
                 int omitted = tracks.Count(t => t.GetProperty("decision").GetString() != "retain");
-                audit = $"轨道：输出 {tracks.Length - omitted}／源 {tracks.Length}；未输出 {omitted}。" + (omitted > 0 ? "请查看“轨道明细”，本次不是完整保留。" : "") + "\r\n";
+                audit += $"轨道：输出 {tracks.Length - omitted}／源 {tracks.Length}；未输出 {omitted}。" + (omitted > 0 ? "请查看“轨道明细”，本次不是完整保留。" : "") + "\r\n";
             }
         }
         catch (Exception error) { audit = "轨道明细暂不可读：" + error.Message + "\r\n"; }
@@ -169,7 +179,7 @@ internal sealed partial class WorkspaceForm
                 if (source == 0) throw new InvalidDataException("原动作骨架不在当前快照中，不能更改原规则重试。");
                 sourceRigChoice.SelectedIndex = source;
             }
-            modelImportScale.Value = options.ModelImportScale; animationPositionScale.Value = options.PositionScale;
+            modelImportScale.Value = options.ModelImportScale; animationPositionScale.Value = options.PositionScale; inferUnits.Checked = options.InferUnits;
             normalizeRoot.Text = options.NormalizeRoot; excludedDescendants.Lines = options.ExcludedDescendants.ToArray(); excludedNodes.Lines = options.ExcludedNodes.ToArray();
             dropUnmatched.Checked = options.DropUnmatched; dropSceneTranslation.Checked = options.DropSceneTranslation;
             forceLoop.Checked = options.ForceLoop; createPreviewScene.Checked = true;
@@ -183,9 +193,9 @@ internal sealed partial class WorkspaceForm
     {
         UpdateAdaptationHint();
         var model = (modelChoice.SelectedItem as ObjectChoice)?.Row;
-        modelImportScale.Value = inventoryTask?.Plan.CharacterId == "chen" && model?.Name == "chr_0005_chen_uimodel"
-            && model.PathId == "8239783119078153412"
-            && inventoryTask.Plan.GameAssemblySha256 == "C24495E51B406F03B03890C4788EE618AE022C991405BE5D5B8B787CB775AE89" ? 100 : 1;
+        modelImportScale.Value = 1;
+        animationPositionScale.Value = 1;
+        inferUnits.Checked = true;
     }
 
     private void UpdateAdaptationHint()
@@ -197,6 +207,7 @@ internal sealed partial class WorkspaceForm
     private AnimationPreparationOptions AdaptationOptions() => new()
     {
         SourceRigKey = (sourceRigChoice.SelectedItem as ObjectChoice)?.Row?.Key ?? "",
+        InferUnits = inferUnits.Checked,
         ModelImportScale = modelImportScale.Value, PositionScale = animationPositionScale.Value,
         DropUnmatched = dropUnmatched.Checked, DropSceneTranslation = dropSceneTranslation.Checked, ForceLoop = forceLoop.Checked,
         CreatePreviewScene = createPreviewScene.Checked,

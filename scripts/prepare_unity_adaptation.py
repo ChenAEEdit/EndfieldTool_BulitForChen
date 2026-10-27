@@ -17,6 +17,7 @@ def prepare_unity_package(state, selection, model, clips):
         require(type(value) in (float, int) and math.isfinite(value) and .0001 <= value <= 10000, "单位倍率无效：" + name)
     for name in ("dropUnmatched", "dropSceneTranslation", "forceLoop"):
         require(type(rules.get(name)) is bool, "适配开关无效：" + name)
+    require(type(rules.get("inferUnits", False)) is bool, "自动倍率推导开关无效。")
     require(type(rules.get("createPreviewScene", False)) is bool, "预览场景开关无效。")
     require(isinstance(rules.get("normalizeRoot"), str) and isinstance(rules.get("excludedDescendants"), list)
             and isinstance(rules.get("excludedNodes"), list)
@@ -42,9 +43,36 @@ def prepare_unity_package(state, selection, model, clips):
         require(digest(destination) == sha, "适配包复制校验失败。")
         inputs.append({"path": relative, "sha256": sha})
 
+    def copy_task_evidence(source, relative):
+        source = Path(source).resolve()
+        require(within(source, (state["task"] / "objects").resolve()) and source.is_file(),
+                "骨架证据必须属于当前任务对象解析记录。")
+        sha = digest(source)
+        destination = target / relative
+        shutil.copy2(source, destination)
+        require(digest(destination) == sha, "骨架证据复制校验失败。")
+        inputs.append({"path": relative, "sha256": sha})
+
     for source in sorted((run / "exports/model").rglob("*")):
         if source.is_file():
             copy(source, "Model/" + source.relative_to(run / "exports/model").as_posix())
+    target_rig = ""
+    human_mappings = ""
+    if rules.get("inferUnits", False):
+        rig_path = Path(model.get("rigEvidencePath") or "").resolve()
+        require(rig_path.is_file() and within(rig_path, state["task"] / "objects"),
+                "自动推导倍率需要本次解析的目标模型蒙皮绑定证据；请重新解析对象。")
+        require(digest(rig_path) == model.get("rigEvidenceSha256"), "目标模型骨架证据摘要不符，请重新解析对象。")
+        rig_doc = json.loads(rig_path.read_text(encoding="utf-8-sig"))
+        require(rig_doc.get("schema") == "endfield-rig-evidence-v1" and rig_doc.get("retargetingVerified") is False,
+                "目标模型骨架证据格式无效；已停止倍率推导。")
+        target_rig = "Evidence/target-rig.json"
+        copy_task_evidence(rig_path, target_rig)
+        mappings_path = Path(model_report.get("avatar_human_candidates") or "").resolve()
+        require(mappings_path.is_file() and within(mappings_path, run / "exports"),
+                "自动推导倍率需要模型导出的语义骨骼映射证据；请重新导出模型。")
+        human_mappings = "Evidence/human-mapping-candidates.json"
+        copy(mappings_path, human_mappings)
     definitions = []
     by_identity = {(row["sourceAsset"], row["sourceBundle"], row["pathId"]): row for row in clips}
     for exported in animation_report["exports"]:
@@ -75,10 +103,10 @@ def prepare_unity_package(state, selection, model, clips):
             require(False, '旧对象解析结果缺少源骨架证据，请重新解析。')
         definitions.append(definition)
     config = {"schema": "endfield-unity-adaptation-config-v1", "taskId": state["result"]["taskId"],
-        "runId": state["result"]["runId"], "adapterVersion": "0.12.0", "modelKey": model["key"],
+        "runId": state["result"]["runId"], "adapterVersion": "0.13.0", "modelKey": model["key"],
         "model": "Model/" + Path(model_report["fbx"]).relative_to(run / "exports/model").as_posix(),
-        "modelImportScale": rules["modelImportScale"],
-        "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes")},
+        "modelImportScale": rules["modelImportScale"], "targetRig": target_rig, "humanMappings": human_mappings,
+        "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes", "inferUnits")},
         "clips": definitions, "inputs": inputs, "preview": {"enabled": rules.get("createPreviewScene", False)}}
     write_json(target / "adaptation.json", config)
     editor = package / "Assets/EndfieldCharacterWorkbench/Editor"
@@ -98,7 +126,7 @@ def prepare_unity_package(state, selection, model, clips):
         "4. 在同目录 Generated 下查看独立动画、控制器、Character.prefab 和 adaptation-result.json。\n"
         "5. 回到工作台点击读取 Unity 适配结果。若勾选了生成预览场景，在 Generated 下打开 CharacterPreview.unity，"
         "进入 Play 后可切换、暂停、重播、调速和逐帧查看。也可将 Prefab 放入自己的场景。\n\n"
-        "单位倍率、排除规则来自本次明确设置。根据主体 Transform 曲线和实际动态肌肉通道选择 Generic 或 Humanoid；"
+        "开启自动推导时，模型倍率来自蒙皮绑定骨段对照，动画位置倍率来自主体骨骼曲线的多时刻测量，并会保存测量报告；证据不足时停止。关闭自动推导后使用明确填写的单位倍率。根据主体 Transform 曲线和实际动态肌肉通道选择 Generic 或 Humanoid；"
         "人形模式要求唯一匹配模型的源人形映射。生成完成后使用工作台“打开并播放预览”，无需再次生成。\n\n"
         "源动画保留，生成结果尚未验证播放。若有未匹配轨道，默认停止并记录；"
         "要忽略轨道请在工具中明确勾选并生成新的包。已生成的文件不会自动覆盖。\n",

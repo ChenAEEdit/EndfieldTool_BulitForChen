@@ -67,7 +67,10 @@ public static class UnityAdaptationResults
                 throw new InvalidDataException("项目中的源文件缺失、重复或摘要已变化。");
         }
         if (!inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.Model))
-            || config.Clips.Any(clip => !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, clip.Source))))
+            || config.Clips.Any(clip => !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, clip.Source)))
+            || config.Rules?.InferUnits == true && (string.IsNullOrEmpty(config.TargetRig) || string.IsNullOrEmpty(config.HumanMappings)
+                || !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.TargetRig))
+                || !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.HumanMappings))))
             throw new InvalidDataException("适配配置未声明完整的模型和源动画。");
         string reportHash = await HashAsync(reportPath, token);
         var report = JsonFiles.Read<NativeReport>(reportPath);
@@ -77,7 +80,11 @@ public static class UnityAdaptationResults
             || expectedInvocationId != null && report.InvocationId != expectedInvocationId
             || report.Clips.Count != result.ExpectedAdaptedClips || report.Clips.Any(row => !row.Adapted))
             throw new InvalidDataException("Unity 适配未完成，或结果不属于本次适配包；请查看 Unity 报告。");
-        if (config.AdapterVersion == "0.12.0")
+        bool inferredUnits = config.Rules?.InferUnits == true;
+        if (inferredUnits && (report.UnitInference?.Enabled != true || !report.UnitInference.Passed
+            || report.Outputs.All(row => !row.Path.EndsWith("/unit-inference.json", StringComparison.Ordinal))))
+            throw new InvalidDataException("自动倍率推导报告缺失或未通过；不能接受该适配结果。");
+        if (config.AdapterVersion is "0.12.0" or "0.13.0")
         {
             foreach (var clip in report.Clips)
             {
@@ -96,7 +103,7 @@ public static class UnityAdaptationResults
             }
         }
         bool preview = config.Preview?.Enabled == true;
-        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) + report.Materials.Count + (string.IsNullOrEmpty(report.HumanAvatar) ? 0 : 1) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
+        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) + report.Materials.Count + (string.IsNullOrEmpty(report.HumanAvatar) ? 0 : 1) + (inferredUnits ? 1 : 0) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
             throw new InvalidDataException("Unity 适配输出不完整或重复。");
         var outputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in report.Outputs)
@@ -134,7 +141,7 @@ public static class UnityAdaptationResults
                 || Path.GetExtension(path) != ".mat" || !outputPaths.Contains(path) || !materialPaths.Add(path))
                 throw new InvalidDataException("生成的预览材质路径无效或重复。");
         }
-        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0")
+        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0")
         {
             var metadata = inputPaths.Concat(outputPaths).Concat(new[] {
                 UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs"),
@@ -183,10 +190,14 @@ public static class UnityAdaptationResults
         public string RunId { get; init; } = "";
         public string Model { get; init; } = "";
         public string AdapterVersion { get; init; } = "";
+        public string TargetRig { get; init; } = "";
+        public string HumanMappings { get; init; } = "";
+        public NativeRules? Rules { get; init; }
         public PreviewOptions? Preview { get; init; }
         public List<Input> Inputs { get; init; } = [];
         public List<Clip> Clips { get; init; } = [];
     }
+    private sealed record NativeRules { public bool InferUnits { get; init; } }
     private sealed record Input(string Path, string Sha256);
     private sealed record Clip(string Id, string Name, string Source, string SourceRig = "");
     private sealed record PreviewOptions(bool Enabled);
@@ -201,6 +212,7 @@ public static class UnityAdaptationResults
         public bool Adapted { get; init; }
         public bool PlaybackVerified { get; init; }
         public bool PreviewCreated { get; init; }
+        public UnitInference? UnitInference { get; init; }
         public string PreviewScene { get; init; } = "";
         public string? HumanAvatar { get; init; }
         public List<NativeClip> Clips { get; init; } = [];
@@ -208,6 +220,7 @@ public static class UnityAdaptationResults
         public List<ObjectOutputFile> Metadata { get; init; } = [];
         public List<NativeMaterial> Materials { get; init; } = [];
     }
+    private sealed record UnitInference { public bool Enabled { get; init; } public bool Passed { get; init; } }
     private sealed record NativeClip
     {
         public string Id { get; init; } = "";

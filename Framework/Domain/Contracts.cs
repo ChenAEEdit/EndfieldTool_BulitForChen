@@ -164,7 +164,12 @@ public sealed record BundleObjectRow
     public string SourceAsset { get; init; } = "";
     public string SourceBundle { get; init; } = "";
     public bool IsModelCandidate { get; init; }
+    public bool HierarchyRoot { get; init; }
+    public string? ParentGameObjectKey { get; init; }
     public string? LinkedAvatarKey { get; init; }
+    public string? LinkedControllerKey { get; init; }
+    public string ControllerEvidence { get; init; } = "none";
+    public List<string> ControllerClipKeys { get; init; } = [];
     public int RendererCount { get; init; }
     public int BoneReferenceCount { get; init; }
     public int HierarchyNodes { get; init; }
@@ -188,6 +193,7 @@ public sealed record AnimationPreparationOptions
     public decimal ModelImportScale { get; init; } = 1;
     public decimal PositionScale { get; init; } = 1;
     public bool DropUnmatched { get; init; }
+    public bool InferUnits { get; init; }
     public bool DropSceneTranslation { get; init; } = true;
     public bool ForceLoop { get; init; }
     public bool CreatePreviewScene { get; init; } = true;
