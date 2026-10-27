@@ -165,7 +165,10 @@ foreach ($name in @('Program.cs', 'WorkspaceUiVerification.csproj')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceUiVerification\' + $name)) -Destination $uiVerification -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs') -Destination $packageRoot -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\框架说明.md') -Destination (Join-Path $packageRoot 'README.md') -Force
+$readme = [IO.File]::ReadAllText((Join-Path $repoRoot 'docs\框架说明.md'))
+# README is one directory above its source document; keep local report links usable.
+$readme = [regex]::Replace($readme, '\]\((?!<|[A-Za-z][A-Za-z0-9+.-]*:|/|#)([^)\r\n]+\.md(?:#[^)\r\n]*)?)\)', '](docs/$1)')
+[IO.File]::WriteAllText((Join-Path $packageRoot 'README.md'), $readme, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
 @{ schema = 'endfield-character-framework-package-v1'; version = '0.12.0-shared-rig-audit'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
