@@ -16,7 +16,7 @@ public static class UnitySharedRigVerification
 {
     [Serializable] class Request { public string directory = ""; public string[] configs = new string[0]; }
     [Serializable] class FileDigest { public string path, sha256, kind; }
-    [Serializable] class Result { public string schema = "endfield-shared-rig-verification-v1", error; public bool passed, inputsUnchanged, outputsUnchanged; public List<FileDigest> files = new List<FileDigest>(); public List<Check> clips = new List<Check>(); public List<string> directClips = new List<string>(), rejectedInvalidInputs = new List<string>(); }
+    [Serializable] class Result { public string schema = "endfield-shared-rig-verification-v1", error; public bool passed, inputsUnchanged, outputsUnchanged, prefabRestMatchesModel = true; public float maxSavedRestRotationDifference, maxSavedRestPositionDifference; public List<FileDigest> files = new List<FileDigest>(); public List<Check> clips = new List<Check>(); public List<string> restDifferences = new List<string>(), directClips = new List<string>(), rejectedInvalidInputs = new List<string>(); }
     [Serializable] class BoneError { public string path; public float degrees, time; public Quaternion source, target; }
     [Serializable] class Check { public string config, clip, referencePolicy = "decoded-key-poses-with-constant-tangents-and-quaternion-continuity"; public int sampleCount, bodyBones, referenceTangentAdjustments; public float maxRotationError, maxPrimarySegmentAngle, sourceKeyPoseMaxError, maxLeftArmElevation = -90, maxRightArmElevation = -90; public string worstBone; public List<BoneError> errors = new List<BoneError>(); }
     public static void Run()
@@ -47,6 +47,21 @@ public static class UnitySharedRigVerification
                         throw new Exception("Output digest differs: " + output.path);
                     result.files.Add(new FileDigest { path = path, sha256 = output.sha256, kind = "output" });
                 }
+                var savedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(root + "/Generated/Character.prefab");
+                var originalModel = AssetDatabase.LoadAssetAtPath<GameObject>(root + "/" + config.model);
+                var originalRest = originalModel.GetComponentsInChildren<Transform>(true).ToDictionary(t => AnimationUtility.CalculateTransformPath(t, originalModel.transform));
+                foreach (var transform in savedPrefab.GetComponentsInChildren<Transform>(true))
+                {
+                    string path = AnimationUtility.CalculateTransformPath(transform, savedPrefab.transform);
+                    var expected = originalRest[path];
+                    float angle = Quaternion.Angle(transform.localRotation, expected.localRotation);
+                    float position = path.Length == 0 ? 0 : Vector3.Distance(transform.localPosition, expected.localPosition);
+                    result.maxSavedRestRotationDifference = Mathf.Max(result.maxSavedRestRotationDifference, angle);
+                    result.maxSavedRestPositionDifference = Mathf.Max(result.maxSavedRestPositionDifference, position);
+                    if (angle > .1f || position > .00001f || Vector3.Distance(transform.localScale, expected.localScale) > .00001f)
+                    { result.prefabRestMatchesModel = false; result.restDifferences.Add(path + ":rotation=" + angle + ";position=" + position); }
+                }
+                if (!result.prefabRestMatchesModel) throw new Exception("Saved prefab changed the imported skeleton reference pose");
                 foreach (var input in config.clips)
                 {
                     var detail = report.clips.Single(c => c.id == input.id);
@@ -71,7 +86,7 @@ public static class UnitySharedRigVerification
                             t.localPosition = n.serializedPosition; t.localRotation = n.serializedRotation; t.localScale = n.serializedScale;
                             nodes.Add(n.path, t);
                         }
-                        foreach (var a in target.GetComponentsInChildren<Animator>(true)) a.enabled = false;
+                        foreach (var a in target.GetComponentsInChildren<Animator>(true)) UnityEngine.Object.DestroyImmediate(a);
                         foreach (var b in target.GetComponentsInChildren<MonoBehaviour>(true)) b.enabled = false;
                         foreach (var mode in new[] { "reversed-axis", "incomplete-quaternion", "ambiguous-body-bind", "missing-semantic-map" })
                         {
@@ -91,6 +106,7 @@ public static class UnitySharedRigVerification
                             foreach (var p in pairs)
                             {
                                 float angle = Quaternion.Angle(p.source.rotation, p.target.rotation);
+                                if (float.IsNaN(angle) || float.IsInfinity(angle)) throw new Exception("Non-finite sampled orientation: " + p.path);
                                 var error = check.errors.FirstOrDefault(e => e.path == p.path);
                                 if (error == null) { error = new BoneError { path = p.path }; check.errors.Add(error); }
                                 if (angle > error.degrees) { error.degrees = angle; error.time = time; error.source = p.source.rotation; error.target = p.target.rotation; }
