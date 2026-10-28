@@ -22,6 +22,7 @@ internal sealed partial class WorkspaceForm
     private ObjectInventory? objectInventory;
     private string? objectInventoryPath;
     private bool loadingClips;
+    private List<string> associatedRelatedModelKeys = [];
 
     private readonly Panel previewPane = new() { Dock = DockStyle.Fill };
     private readonly ComboBox clipCategory = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -45,7 +46,7 @@ internal sealed partial class WorkspaceForm
         var selectors = Grid(2, 2);
         selectors.ColumnStyles.Add(new(SizeType.Absolute, 78)); selectors.ColumnStyles.Add(new(SizeType.Percent, 100));
         selectors.RowStyles.Add(new(SizeType.Percent, 50)); selectors.RowStyles.Add(new(SizeType.Percent, 50));
-        selectors.Controls.Add(Note("模型"), 0, 0); selectors.Controls.Add(modelChoice, 1, 0);
+        selectors.Controls.Add(Note("角色本体"), 0, 0); selectors.Controls.Add(modelChoice, 1, 0);
         selectors.Controls.Add(Note("骨架"), 0, 1); selectors.Controls.Add(avatarChoice, 1, 1);
         layout.Controls.Add(selectors, 0, 2);
         var filters = Grid(1, 2); filters.RowStyles.Add(new(SizeType.Percent, 50)); filters.RowStyles.Add(new(SizeType.Percent, 50));
@@ -58,8 +59,10 @@ internal sealed partial class WorkspaceForm
         clipActions.Controls.Add(ActionButton("勾选当前列表", () => SetClipChecks(true)));
         clipActions.Controls.Add(ActionButton("清空全部勾选", () => { checkedClips.Clear(); PopulateObjects(); }));
         layout.Controls.Add(clipActions, 0, 5);
-        var metadata = Grid(1, 2); metadata.RowStyles.Add(new(SizeType.Percent, 58)); metadata.RowStyles.Add(new(SizeType.Percent, 42));
-        metadata.Controls.Add(objectRows, 0, 0); metadata.Controls.Add(objectDetails, 0, 1);
+        var metadata = Grid(1, 3); metadata.RowStyles.Add(new(SizeType.Absolute, 40)); metadata.RowStyles.Add(new(SizeType.Percent, 58)); metadata.RowStyles.Add(new(SizeType.Percent, 42));
+        var investigate = new Button { Text = "调查关联道具", Width = 155, Height = 35 };
+        investigate.Click += async (_, _) => await RunWorkflowAsync("inspect-props"); objectActions.Add(investigate);
+        metadata.Controls.Add(investigate, 0, 0); metadata.Controls.Add(objectRows, 0, 1); metadata.Controls.Add(objectDetails, 0, 2);
         var advancedObjects = Collapsible("高级：原始对象与来源详情", metadata, 220);
         layout.Controls.Add(advancedObjects, 0, 6);
         body.Controls.Add(ScrollableWorkflow(layout, advancedObjects), 0, 0);
@@ -72,6 +75,7 @@ internal sealed partial class WorkspaceForm
         clipCategory.SelectedIndexChanged += (_, _) => PopulateObjects();
         modelChoice.SelectedIndexChanged += (_, _) =>
         {
+            associatedRelatedModelKeys = [];
             var linked = (modelChoice.SelectedItem as ObjectChoice)?.Row?.LinkedAvatarKey;
             avatarChoice.SelectedIndex = 0;
             if (linked != null)
@@ -207,7 +211,7 @@ internal sealed partial class WorkspaceForm
     private void SelectAssociatedIdleSet()
     {
         if (objectInventory == null || inventoryTask == null) throw new InvalidDataException("请先载入角色对象列表。");
-        var resolved = CharacterAssociationResolver.Resolve(objectInventory, inventoryTask.Plan.CharacterId);
+        var resolved = CharacterAssociationResolver.Resolve(objectInventory, inventoryTask.Plan.CharacterId, includeSpecialIdle: true);
         int modelIndex = Enumerable.Range(1, modelChoice.Items.Count - 1)
             .FirstOrDefault(index => (modelChoice.Items[index] as ObjectChoice)?.Row?.Key == resolved.Model.Key);
         int avatarIndex = Enumerable.Range(1, avatarChoice.Items.Count - 1)
@@ -216,11 +220,13 @@ internal sealed partial class WorkspaceForm
 
         modelChoice.SelectedIndex = modelIndex;
         avatarChoice.SelectedIndex = avatarIndex;
+        associatedRelatedModelKeys = resolved.RelatedModels.Select(row => row.Key).ToList();
         checkedClips.Clear();
         checkedClips.UnionWith(resolved.Clips.Select(row => row.Key));
         PopulateObjects();
-        objectDetails.Text = "自动关联依据：唯一独立模型根节点 → 模型实际 Animator Avatar/Controller 引用 → Controller 实际引用的待机动画。"
+        objectDetails.Text = "自动关联依据：唯一角色本体 → 实际 Animator Avatar/Controller 引用 → Controller 引用的待机动画。导出包含本体子层级中的关联模型，并核对初始显隐。"
             + $"\r\n控制器：{resolved.ControllerKey}；引用动画：{resolved.ReferencedClipCount}；已选择待机：{string.Join("、", resolved.Clips.Select(row => row.Name))}。"
+            + $"\r\n层级内关联模型候选：{associatedRelatedModelKeys.Count}；独立道具需要额外挂点及行为证据。"
             + "\r\n源骨架归属未由控制器关联证明；共享走路仍需单独选择有证据的来源。";
     }
 
@@ -232,17 +238,26 @@ internal sealed partial class WorkspaceForm
 
     private async Task RunWorkflowAsync(string mode)
     {
-        bool preview = mode == "preview", export = mode != "inspect", prepare = mode is "prepare" or "preview";
+        bool investigate = mode == "inspect-props", preview = mode == "preview", export = mode is not ("inspect" or "inspect-props"), prepare = mode is "prepare" or "preview";
         if (scanCancellation != null || extractionCancellation != null) return;
         SavedPlan saved;
         ObjectExportSelection? selection = null;
+        var preserved = investigate ? new {
+            Model = (modelChoice.SelectedItem as ObjectChoice)?.Row, Avatar = (avatarChoice.SelectedItem as ObjectChoice)?.Row,
+            SourceRig = (sourceRigChoice.SelectedItem as ObjectChoice)?.Row,
+            Clips = objectInventory?.Objects.Where(row => checkedClips.Contains(row.Key)).ToArray() ?? [],
+            Related = objectInventory?.Objects.Where(row => associatedRelatedModelKeys.Contains(row.Key)).ToArray() ?? [],
+            Rules = AdaptationOptions()
+        } : null;
         try
         {
-            saved = export ? inventoryTask ?? throw new InvalidDataException("请先解析或载入对象列表。") : SelectedTask();
+            saved = export || investigate ? inventoryTask ?? throw new InvalidDataException("请先解析或载入对象列表。") : SelectedTask();
+            if (investigate && objectInventoryPath == null) throw new InvalidDataException("请先载入可核对的对象快照。");
             if (export)
             {
                 selection = new((modelChoice.SelectedItem as ObjectChoice)?.Row?.Key,
-                    (avatarChoice.SelectedItem as ObjectChoice)?.Row?.Key, checkedClips.Order().ToList(), prepare ? AdaptationOptions() : null);
+                    (avatarChoice.SelectedItem as ObjectChoice)?.Row?.Key, checkedClips.Order().ToList(), prepare ? AdaptationOptions() : null)
+                    { RelatedModelKeys = associatedRelatedModelKeys.ToList() };
                 if (selection.ModelKey == null && selection.ClipKeys.Count == 0) throw new InvalidDataException("请选择模型根节点或勾选动画。");
                 if (prepare && (selection.ModelKey == null || selection.AvatarKey == null || selection.ClipKeys.Count == 0))
                     throw new InvalidDataException("生成适配包需要选择模型、Avatar 和至少一条动画。");
@@ -276,9 +291,33 @@ internal sealed partial class WorkspaceForm
                 if (scanLog.TextLength > 150000) scanLog.Text = scanLog.Text[^75000..];
                 scanLog.AppendText(DateTime.Now.ToString("HH:mm:ss ") + row.Message + Environment.NewLine);
             });
-            var result = await objectWorkflow.ExecuteAsync(saved, preview ? "prepare" : mode, objectInventoryPath, selection, progress, cancellation.Token);
+            var result = investigate
+                ? await objectWorkflow.ExpandModelReferencesAsync(saved, objectInventoryPath!, progress, cancellation.Token)
+                : await objectWorkflow.ExecuteAsync(saved, preview ? "prepare" : mode, objectInventoryPath, selection, progress, cancellation.Token);
             scanProgress.Value = 100;
-            if (!export) LoadObjects(saved, result.InventoryPath!);
+            if (!export)
+            {
+                LoadObjects(saved, result.InventoryPath!);
+                if (preserved != null)
+                {
+                    void Restore(ComboBox combo, BundleObjectRow? old)
+                    {
+                        if (old == null) { combo.SelectedIndex = 0; return; }
+                        var row = ObjectWorkflow.MatchSnapshotObject(objectInventory!, old);
+                        int index = Enumerable.Range(1, combo.Items.Count - 1).Single(i => (combo.Items[i] as ObjectChoice)?.Row?.Key == row.Key);
+                        combo.SelectedIndex = index;
+                    }
+                    Restore(modelChoice, preserved.Model); Restore(avatarChoice, preserved.Avatar); Restore(sourceRigChoice, preserved.SourceRig);
+                    checkedClips.UnionWith(preserved.Clips.Select(row => ObjectWorkflow.MatchSnapshotObject(objectInventory!, row).Key));
+                    associatedRelatedModelKeys = preserved.Related.Select(row => ObjectWorkflow.MatchSnapshotObject(objectInventory!, row).Key).ToList();
+                    var rules = preserved.Rules;
+                    modelImportScale.Value = rules.ModelImportScale; animationPositionScale.Value = rules.PositionScale; inferUnits.Checked = rules.InferUnits;
+                    dropUnmatched.Checked = rules.DropUnmatched; dropSceneTranslation.Checked = rules.DropSceneTranslation;
+                    forceLoop.Checked = rules.ForceLoop; createPreviewScene.Checked = rules.CreatePreviewScene;
+                    normalizeRoot.Text = rules.NormalizeRoot; excludedDescendants.Lines = rules.ExcludedDescendants.ToArray(); excludedNodes.Lines = rules.ExcludedNodes.ToArray();
+                    PopulateObjects();
+                }
+            }
             objectDetails.Text = DescribeObjectResult(result);
             status.Text = result.Status == "partial" ? "部分导出失败，请查看对象报告。" : result.Message;
             if (prepare) adaptationDetails.Text = DescribeObjectResult(result) + "\r\n适配包：" + result.UnityPackageDirectory;

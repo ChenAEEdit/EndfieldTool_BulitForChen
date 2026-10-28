@@ -69,38 +69,85 @@ def checked_inputs(inventory):
     return base
 
 
-def inspect_bundles(bundle_result, plan_bytes):
+def inspect_bundles(bundle_result, plan_bytes, reuse_inventory=None, fork_snapshot=False):
     run = STATE["run"]
-    inputs = run / "input"
-    inputs.mkdir()
-    copied = {}
-    for index, row in enumerate(bundle_result["files"]):
-        source = checked_path(row["path"], STATE["task"] / "bundles")
-        require(source.is_file() and source.stat().st_size == row["length"] and md5(source) == row["md5"],
-                "Bundle 输出已变化，请先继续／重试 Bundle 提取：" + str(source))
-        name = source.name
-        if name.casefold() in copied:
-            require(copied[name.casefold()]["md5"] == row["md5"], "不同 Bundle 使用相同文件名，无法可靠解析。")
-            continue
-        target = inputs / name
-        shutil.copy2(source, target)
-        require(md5(target) == row["md5"], "复制解析快照失败。")
-        copied[name.casefold()] = {"path": str(target), "md5": row["md5"], "length": row["length"]}
-        emit(f"准备解析快照 {index + 1}/{len(bundle_result['files'])}", 5 + int(25 * (index + 1) / len(bundle_result["files"])))
+    prior = None
+    prior_digest = None
+    if reuse_inventory:
+        prior = read(checked_path(reuse_inventory, STATE['task'] / 'objects'))
+        prior_digest = digest(Path(reuse_inventory))
+        require(prior.get('schema') == 'endfield-object-inventory-v1' and prior.get('taskId') == STATE['result']['taskId']
+                and prior.get('bundleRunId') == bundle_result['runId']
+                and prior.get('planSha256') == hashlib.sha256(plan_bytes).hexdigest().upper(), '旧解析快照与当前任务、提取或计划不符。')
+        inputs = checked_inputs(prior)
+        copied = {Path(row['path']).name.casefold(): row for row in prior['inputFiles']}
+        if fork_snapshot:
+            inputs = run / 'input'; inputs.mkdir()
+            forked = {}
+            for name, row in copied.items():
+                target = inputs / Path(row['path']).name
+                try:
+                    os.link(row['path'], target)
+                except OSError:
+                    shutil.copy2(row['path'], target)
+                forked[name] = dict(row, path=str(target))
+            copied = forked
+            emit(f'从 {len(copied)} 个已核对输入创建独立附件调查快照；保留旧快照。', 30)
+        else:
+            emit(f'复用 {len(copied)} 个已核对的解析输入；生成新证据记录，不扩展旧快照。', 30)
+    else:
+        inputs = run / "input"
+        inputs.mkdir()
+        copied = {}
+        for index, row in enumerate(bundle_result["files"]):
+            source = checked_path(row["path"], STATE["task"] / "bundles")
+            require(source.is_file() and source.stat().st_size == row["length"] and md5(source) == row["md5"],
+                    "Bundle 输出已变化，请先继续／重试 Bundle 提取：" + str(source))
+            name = source.name
+            if name.casefold() in copied:
+                require(copied[name.casefold()]["md5"] == row["md5"], "不同 Bundle 使用相同文件名，无法可靠解析。")
+                continue
+            target = inputs / name
+            shutil.copy2(source, target)
+            require(md5(target) == row["md5"], "复制解析快照失败。")
+            copied[name.casefold()] = {"path": str(target), "md5": row["md5"], "length": row["length"]}
+            emit(f"准备解析快照 {index + 1}/{len(bundle_result['files'])}", 5 + int(25 * (index + 1) / len(bundle_result["files"])))
     report = run / "inventory.json"
     emit("读取实际模型、网格、Avatar 和动画对象…", 35)
     code = run_tool("runtime/object-probe/BundleObjectProbe.exe", ["--input", inputs, "--report", report])
     require(code == 0 and report.is_file(), "Bundle 对象解析失败，请查看本次日志。")
     inventory = read(report)
     require(inventory.get("schema") == "endfield-object-inventory-v1" and inventory.get("objects"), "没有解析到可列出的对象。")
+    expand = not prior or fork_snapshot
+    from role_bundle_discovery import add_role_model_inputs
+    model_discovery = add_role_model_inputs(json.loads(plan_bytes.decode('utf-8-sig')), bundle_result, inventory, run, inputs, copied) if expand else prior.get('roleModelDiscovery', {'addedFiles': [], 'reason': 'reused-verified-snapshot'})
+    if expand and model_discovery['addedFiles']:
+        emit('重新解析包含模型入口候选的快照…', 40)
+        code = run_tool("runtime/object-probe/BundleObjectProbe.exe", ["--input", inputs, "--report", report])
+        require(code == 0, '模型入口候选解析失败。')
+        inventory = read(report)
+    from prop_reference_discovery import add_prop_reference_inputs
+    prop_discovery = add_prop_reference_inputs(json.loads(plan_bytes.decode('utf-8-sig')), bundle_result, inventory, run, inputs, copied) if expand else prior.get('propReferenceDiscovery', {'addedFiles': [], 'reason': 'reused-verified-snapshot'})
+    if expand and prop_discovery['addedFiles']:
+        emit('重新解析包含附件实际反向引用的快照…', 42)
+        code = run_tool("runtime/object-probe/BundleObjectProbe.exe", ["--input", inputs, "--report", report])
+        require(code == 0, '附件引用候选解析失败。')
+        inventory = read(report)
     from source_rig_discovery import add_source_rig_inputs
-    discovery = add_source_rig_inputs(json.loads(plan_bytes.decode('utf-8-sig')), bundle_result, inventory, run, inputs, copied, read)
-    if discovery['addedFiles']:
+    discovery = add_source_rig_inputs(json.loads(plan_bytes.decode('utf-8-sig')), bundle_result, inventory, run, inputs, copied, read) if expand else prior.get('sourceRigDiscovery', {'addedFiles': [], 'reason': 'reused-verified-snapshot'})
+    if expand and discovery['addedFiles']:
         emit('重新解析包含源骨架证据的完整快照…', 38)
         code = run_tool("runtime/object-probe/BundleObjectProbe.exe", ["--input", inputs, "--report", report])
         require(code == 0, '源骨架补充快照解析失败。')
         inventory = read(report)
     inventory['sourceRigDiscovery'] = discovery
+    inventory['roleModelDiscovery'] = model_discovery
+    inventory['propReferenceDiscovery'] = prop_discovery
+    if prior:
+        inventory['reusedInventoryPath'] = str(Path(reuse_inventory).resolve())
+        inventory['reusedInventorySha256'] = prior_digest
+        require(digest(Path(reuse_inventory)) == prior_digest, '调查期间原对象列表发生变化。')
+        require(set(Path(prior['input']).glob('*.ab')) == {Path(row['path']) for row in prior['inputFiles']}, '调查期间原快照文件集合发生变化。')
     keys = [row["key"] for row in inventory["objects"]]
     require(len(keys) == len(set(keys)), "对象标识重复，无法精确选择。")
     inventory.update(taskId=STATE["result"]["taskId"], runId=STATE["result"]["runId"],
@@ -143,6 +190,16 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
     output = STATE["run"] / "exports"
     output.mkdir()
     failures = STATE["result"]["failures"]
+    related = selection.get('relatedModelKeys') or []
+    require(isinstance(related, list) and all(isinstance(key, str) for key in related), '关联模型选择无效。')
+    assembly = None
+    if root and inventory.get('serializedEvidencePath'):
+        from model_assembly import resolve_assembly
+        assembly = resolve_assembly(inventory, inventory_path, root['key'], related, [clip['key'] for clip in clips])
+    else:
+        require(not related, '旧对象解析缺少关联模型证据，请重新解析。')
+        if root:
+            STATE['result']['warnings'].append('旧快照没有模型组成及初始显隐证据，不能认定待机道具完整。')
     if root:
         emit("导出精确选择的模型根节点为 FBX…", 30)
         report = STATE["run"] / "model-report.json"
@@ -165,6 +222,9 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
                 STATE["result"]["warnings"].append("模型存在未解析的外部引用，详见 model-report.json。")
         else:
             failures.append("所选模型导出失败，详见 model-report.json 和运行日志。")
+        if assembly is not None:
+            write_json(output / 'model/model-assembly.json', assembly)
+            register_output(output / 'model/model-assembly.json', 'ModelAssemblyEvidence')
     if clips:
         emit("解码精确选择的 AnimationClip 对象…", 65)
         report = STATE["run"] / "animation-report.json"
@@ -220,6 +280,8 @@ def main():
     parser.add_argument("--mode", required=True, choices=("inspect", "export", "prepare"))
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--selection", type=Path)
+    parser.add_argument("--reuse-snapshot", action='store_true')
+    parser.add_argument("--fork-snapshot", action='store_true')
     args = parser.parse_args()
     plan_path = args.plan.resolve()
     plan = read(plan_path)
@@ -256,8 +318,11 @@ def main():
         "adapted": False, "playbackVerified": False, "startedAt": datetime.now(timezone.utc).isoformat()})
     publish()
     if args.mode == "inspect":
-        inspect_bundles(bundle_result, plan_bytes)
+        require(not args.reuse_snapshot or args.inventory, '复用解析快照需要明确的对象列表。')
+        require(not args.fork_snapshot or args.reuse_snapshot, '附件调查需要复用已核对的旧快照。')
+        inspect_bundles(bundle_result, plan_bytes, args.inventory if args.reuse_snapshot else None, args.fork_snapshot)
     else:
+        require(not args.reuse_snapshot and not args.fork_snapshot, '只有重新解析操作可以复用已有快照。')
         require(args.inventory and args.selection, "导出需要对象列表和明确选择。")
         export_objects(args.inventory, args.selection, bundle_result, plan_bytes)
     require(plan_path.read_bytes() == plan_bytes, "执行期间计划已变化，结果未标为完成。")

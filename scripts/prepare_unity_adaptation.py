@@ -103,11 +103,13 @@ def prepare_unity_package(state, selection, model, clips):
             require(False, '旧对象解析结果缺少源骨架证据，请重新解析。')
         definitions.append(definition)
     config = {"schema": "endfield-unity-adaptation-config-v1", "taskId": state["result"]["taskId"],
-        "runId": state["result"]["runId"], "adapterVersion": "0.13.0", "modelKey": model["key"],
+        "runId": state["result"]["runId"], "adapterVersion": "0.15.0", "modelKey": model["key"],
         "model": "Model/" + Path(model_report["fbx"]).relative_to(run / "exports/model").as_posix(),
         "modelImportScale": rules["modelImportScale"], "targetRig": target_rig, "humanMappings": human_mappings,
         "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes", "inferUnits")},
         "clips": definitions, "inputs": inputs, "preview": {"enabled": rules.get("createPreviewScene", False)}}
+    if (target / 'Model/model-assembly.json').is_file():
+        config['assembly'] = 'Model/model-assembly.json'
     write_json(target / "adaptation.json", config)
     editor = package / "Assets/EndfieldCharacterWorkbench/Editor"
     editor.mkdir(parents=True)

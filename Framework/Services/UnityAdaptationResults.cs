@@ -67,6 +67,7 @@ public static class UnityAdaptationResults
                 throw new InvalidDataException("项目中的源文件缺失、重复或摘要已变化。");
         }
         if (!inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.Model))
+            || !string.IsNullOrEmpty(config.Assembly) && !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.Assembly))
             || config.Clips.Any(clip => !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, clip.Source)))
             || config.Rules?.InferUnits == true && (string.IsNullOrEmpty(config.TargetRig) || string.IsNullOrEmpty(config.HumanMappings)
                 || !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.TargetRig))
@@ -84,7 +85,7 @@ public static class UnityAdaptationResults
         if (inferredUnits && (report.UnitInference?.Enabled != true || !report.UnitInference.Passed
             || report.Outputs.All(row => !row.Path.EndsWith("/unit-inference.json", StringComparison.Ordinal))))
             throw new InvalidDataException("自动倍率推导报告缺失或未通过；不能接受该适配结果。");
-        if (config.AdapterVersion is "0.12.0" or "0.13.0")
+        if (config.AdapterVersion is "0.12.0" or "0.13.0" or "0.15.0")
         {
             foreach (var clip in report.Clips)
             {
@@ -141,7 +142,7 @@ public static class UnityAdaptationResults
                 || Path.GetExtension(path) != ".mat" || !outputPaths.Contains(path) || !materialPaths.Add(path))
                 throw new InvalidDataException("生成的预览材质路径无效或重复。");
         }
-        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0")
+        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0" or "0.15.0")
         {
             var metadata = inputPaths.Concat(outputPaths).Concat(new[] {
                 UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs"),
@@ -189,6 +190,7 @@ public static class UnityAdaptationResults
         public string TaskId { get; init; } = "";
         public string RunId { get; init; } = "";
         public string Model { get; init; } = "";
+        public string Assembly { get; init; } = "";
         public string AdapterVersion { get; init; } = "";
         public string TargetRig { get; init; } = "";
         public string HumanMappings { get; init; } = "";

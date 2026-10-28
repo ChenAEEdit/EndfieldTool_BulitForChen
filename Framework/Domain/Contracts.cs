@@ -186,6 +186,8 @@ public sealed record ObjectInventory
     public Guid TaskId { get; init; }
     public string RunId { get; init; } = "";
     public List<BundleObjectRow> Objects { get; init; } = [];
+    public string? SerializedEvidencePath { get; init; }
+    public string? SerializedEvidenceSha256 { get; init; }
 }
 
 public sealed record AnimationPreparationOptions
@@ -204,7 +206,10 @@ public sealed record AnimationPreparationOptions
 }
 
 public sealed record ObjectExportSelection(string? ModelKey, string? AvatarKey, List<string> ClipKeys,
-    AnimationPreparationOptions? Adaptation = null);
+    AnimationPreparationOptions? Adaptation = null)
+{
+    public List<string> RelatedModelKeys { get; init; } = [];
+}
 
 public sealed record ObjectOutputFile
 {

@@ -26,13 +26,18 @@ public static class CharacterAnimationAdapter
     [Serializable] public class Preview { public bool enabled; }
     [Serializable] public class Config
     {
-        public string schema, taskId, runId, model, adapterVersion, targetRig, humanMappings;
+        public string schema, taskId, runId, model, modelKey, adapterVersion, targetRig, humanMappings, assembly;
         public float modelImportScale = 1;
         public Rules rules;
         public ClipInput[] clips;
         public InputFile[] inputs;
         public Preview preview;
     }
+    [Serializable] public class AssemblyNode { public string key, path, rendererType; public bool active, rendererEnabled; }
+    [Serializable] public class LodRenderer { public string path, rendererType; public bool isNull; }
+    [Serializable] public class LodLevel { public float height, fadeWidth; public LodRenderer[] renderers; }
+    [Serializable] public class LodGroupInput { public string path, unitPolicy; public float size; public Vector3 referencePoint; public int fadeMode; public bool enabled, animateCrossFading; public LodLevel[] levels; }
+    [Serializable] public class ModelAssembly { public string schema, bodyKey, evidence, sourceEvidenceSha256; public AssemblyNode[] nodes; public bool visualDependenciesResolved; public string[] unsupportedVisualComponents; public LodGroupInput[] lodGroups; }
     [Serializable] public class ClipReport
     {
         public string id, name, output, error, state;
@@ -91,7 +96,7 @@ public static class CharacterAnimationAdapter
     [Serializable] public class MaterialPreview { public string source, output, baseMap; public bool textured; }
     [Serializable] public class Diagnostics
     {
-        public int meshes, vertices, bones, missingBones, unweightedVertices, invalidWeights, nonNormalizedVertices, nonFiniteVertices, duplicatePaths, missingBaseMaps;
+        public int meshes, vertices, bones, missingBones, unweightedVertices, invalidWeights, nonNormalizedVertices, nonFiniteVertices, duplicatePaths, missingBaseMaps, lodGroups;
         public bool geometryPassed;
         public string[] warnings;
     }
@@ -256,7 +261,7 @@ public static class CharacterAnimationAdapter
         }
         if (report.clips.Any(item => item.humanoid) && (report.humanAvatar != generated + "/CharacterHumanAvatar.asset" || !outputs.Contains(report.humanAvatar)))
             throw new Exception("人形动画缺少配套 Avatar，请保留原包并重新生成。");
-        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0")
+        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0" || config.adapterVersion == "0.15.0")
         {
             var expected = new HashSet<string>(config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs)
                 .Concat(new[] { "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs", "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs" })
@@ -401,7 +406,10 @@ public static class CharacterAnimationAdapter
                     report.skippedAnimator++; missing.Add(binding.path);
                     audit.decision = rules.dropUnmatched ? "omit" : "reject"; audit.reason = "animator-track-in-generic-mode"; continue;
                 }
-                if (binding.type != typeof(Transform) && !muscleBinding)
+                bool visibility = binding.type == typeof(GameObject) && binding.propertyName == "m_IsActive"
+                    || typeof(Renderer).IsAssignableFrom(binding.type) && binding.propertyName == "m_Enabled";
+                bool blendShape = binding.type == typeof(SkinnedMeshRenderer) && binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal);
+                if (binding.type != typeof(Transform) && !muscleBinding && !visibility && !blendShape)
                 {
                     report.skippedOther++; missing.Add(binding.path);
                     audit.decision = rules.dropUnmatched ? "omit" : "reject"; audit.reason = "unsupported-component-track"; continue;
@@ -422,6 +430,15 @@ public static class CharacterAnimationAdapter
                     continue;
                 }
                 audit.targetPath = mapped;
+                var targetNode = transforms[Array.IndexOf(paths, mapped)];
+                if (visibility && binding.type != typeof(GameObject) && !targetNode.GetComponent(binding.type))
+                    throw new Exception("显隐轨道找不到对应 Renderer：" + mapped);
+                if (blendShape)
+                {
+                    var skin = targetNode.GetComponent<SkinnedMeshRenderer>();
+                    if (!skin || !skin.sharedMesh || skin.sharedMesh.GetBlendShapeIndex(binding.propertyName.Substring("blendShape.".Length)) < 0)
+                        throw new Exception("表情轨道找不到对应 BlendShape：" + mapped + " / " + binding.propertyName);
+                }
                 // Excluding a head's descendants preserves the head rotation itself.
                 if (exactExclusions.Contains(mapped) || exclusions.Any(prefix => mapped.StartsWith(prefix + "/", StringComparison.Ordinal)))
                 { report.excludedBindings++; audit.decision = "omit"; audit.reason = exactExclusions.Contains(mapped) ? "user-excluded-node" : "user-excluded-descendant"; continue; }
@@ -435,6 +452,7 @@ public static class CharacterAnimationAdapter
                 {
                     if (!Finite(keys[i].time) || !Finite(keys[i].value) || i > 0 && keys[i].time < keys[i - 1].time)
                         throw new Exception("非有限数值或逆序时间：" + binding.path + " / " + binding.propertyName);
+                    if (visibility && keys[i].value != 0 && keys[i].value != 1) throw new Exception("显隐轨道包含非布尔值：" + binding.path);
                     if (position)
                     {
                         keys[i].value = (keys[i].value - offset) * rules.positionScale;
@@ -445,11 +463,17 @@ public static class CharacterAnimationAdapter
                     if (!Finite(keys[i].outTangent)) { keys[i].outTangent = 0; right.Add(i); report.repairedTangents++; }
                 }
                 curve.keys = keys;
+                if (visibility)
+                    for (int i = 0; i < keys.Length; i++)
+                    {
+                        AnimationUtility.SetKeyLeftTangentMode(curve, i, AnimationUtility.TangentMode.Constant);
+                        AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.Constant);
+                    }
                 foreach (int i in left) { AnimationUtility.SetKeyBroken(curve, i, true); AnimationUtility.SetKeyLeftTangentMode(curve, i, AnimationUtility.TangentMode.Constant); }
                 foreach (int i in right) { AnimationUtility.SetKeyBroken(curve, i, true); AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.Constant); }
                 var remapped = binding; remapped.path = mapped;
                 if (mapped != binding.path) report.remappedBindings++;
-                if (bindings.Any(previous => previous.path == remapped.path && previous.propertyName == remapped.propertyName))
+                if (bindings.Any(previous => previous.path == remapped.path && previous.propertyName == remapped.propertyName && previous.type == remapped.type))
                 {
                     audit.decision = "reject"; audit.reason = "multiple-source-tracks-to-one-target";
                     throw new Exception("多条源轨道映射到同一目标：" + mapped + " / " + remapped.propertyName);
@@ -1027,6 +1051,7 @@ public static class CharacterAnimationAdapter
             var root = UnityEngine.Object.Instantiate(prefab);
             UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(root, scene);
             root.name = "Character"; root.transform.localPosition = Vector3.zero;
+            if (!string.IsNullOrEmpty(config.assembly)) ApplyAssemblyVisibility(root, config, basePath);
             var avatar = AssetDatabase.LoadAllAssetsAtPath(modelPath).OfType<Avatar>().SingleOrDefault(item => item.isValid && !item.isHuman);
             if (!avatar) throw new Exception("模型没有有效的 Generic Avatar。");
             Avatar humanAvatar = null;
@@ -1125,6 +1150,60 @@ public static class CharacterAnimationAdapter
         Debug.Log("原生动画适配完成；尚未验证播放。结果：" + reportPath);
     }
 
+    static void ApplyAssemblyVisibility(GameObject root, Config config, string basePath)
+    {
+        if (!config.inputs.Any(file => file.path == config.assembly)) throw new Exception("模型组成证据未包含在输入摘要清单中。");
+        var assembly = JsonUtility.FromJson<ModelAssembly>(File.ReadAllText(Local(basePath, config.assembly)));
+        if (assembly.schema != "endfield-model-assembly-v1" || assembly.bodyKey != config.modelKey
+            || assembly.evidence != "actual-transform-parent-and-child-references" || assembly.nodes == null || assembly.nodes.Length == 0
+            || !Regex.IsMatch(assembly.sourceEvidenceSha256 ?? "", "^[A-F0-9]{64}$")
+            || assembly.nodes.Select(node => node.path).Distinct().Count() != assembly.nodes.Length)
+            throw new Exception("模型组成证据无效或有重复节点。");
+        if (!assembly.visualDependenciesResolved)
+            throw new Exception("模型组成包含尚未还原的外部状态机效果、粒子或时间线；请查看 model-assembly.json，不能标记完整待机通过。");
+        var transforms = root.GetComponentsInChildren<Transform>(true);
+        var paths = transforms.Select(t => AnimationUtility.CalculateTransformPath(t, root.transform)).ToArray();
+        foreach (var node in assembly.nodes)
+        {
+            string mapped = MatchPath(node.path, paths);
+            if (mapped == null) throw new Exception("导出模型缺少组成节点或路径不唯一：" + node.path);
+            var target = transforms[Array.IndexOf(paths, mapped)];
+            target.gameObject.SetActive(node.active);
+            if (!string.IsNullOrEmpty(node.rendererType))
+            {
+                var renderer = target.GetComponents<Renderer>().SingleOrDefault(r => r.GetType().Name == node.rendererType);
+                if (!renderer) throw new Exception("导出模型缺少组成 Renderer：" + node.path);
+                renderer.enabled = node.rendererEnabled;
+            }
+        }
+        foreach (var input in assembly.lodGroups ?? new LodGroupInput[0])
+        {
+            if (input.unitPolicy != "source-local-times-inferred-position-scale" || input.levels == null || input.levels.Length == 0 || input.levels.Length > 8
+                || !Finite(input.size) || input.size <= 0 || !Finite(config.rules.positionScale) || config.rules.positionScale <= 0)
+                throw new Exception("LOD 组成或单位证据无效。");
+            string mapped = MatchPath(input.path, paths);
+            if (mapped == null) throw new Exception("找不到唯一的 LODGroup 挂点：" + input.path);
+            var target = transforms[Array.IndexOf(paths, mapped)];
+            var group = target.GetComponent<LODGroup>();
+            if (!group) group = target.gameObject.AddComponent<LODGroup>();
+            var levels = input.levels.Select(level => new LOD(level.height, level.renderers.Select(item =>
+            {
+                if (item.isNull) return null;
+                string path = MatchPath(item.path, paths);
+                if (path == null) throw new Exception("LOD Renderer 路径缺失或不唯一：" + item.path);
+                var renderer = transforms[Array.IndexOf(paths, path)].GetComponents<Renderer>().SingleOrDefault(r => r.GetType().Name == item.rendererType);
+                if (!renderer) throw new Exception("LOD Renderer 类型或引用不符：" + item.path);
+                return renderer;
+            }).ToArray()) { fadeTransitionWidth = level.fadeWidth }).ToArray();
+            var point = input.referencePoint * config.rules.positionScale;
+            float size = input.size * config.rules.positionScale;
+            if (!Finite(point.x) || !Finite(point.y) || !Finite(point.z) || !Finite(size) || size <= 0) throw new Exception("LOD 单位换算超出有效范围。");
+            group.SetLODs(levels); group.localReferencePoint = point;
+            group.size = size; group.fadeMode = (LODFadeMode)input.fadeMode;
+            group.animateCrossFading = input.animateCrossFading; group.enabled = input.enabled;
+        }
+    }
+
     static MaterialPreview[] PrepareMaterials(GameObject root, string basePath, string generated, List<string> outputs)
     {
         string model = basePath + "/Model", metadata = model + "/material_properties.json";
@@ -1183,7 +1262,7 @@ public static class CharacterAnimationAdapter
 
     static Diagnostics Diagnose(GameObject root, MaterialPreview[] materials)
     {
-        var result = new Diagnostics(); var warnings = new List<string>(); var bones = new HashSet<Transform>();
+        var result = new Diagnostics { lodGroups = root.GetComponentsInChildren<LODGroup>(true).Length }; var warnings = new List<string>(); var bones = new HashSet<Transform>();
         var paths = root.GetComponentsInChildren<Transform>(true).Select(item => AnimationUtility.CalculateTransformPath(item, root.transform)).ToArray();
         result.duplicatePaths = paths.Length - paths.Distinct().Count();
         foreach (var skin in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))

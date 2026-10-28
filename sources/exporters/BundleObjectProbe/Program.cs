@@ -87,7 +87,10 @@ foreach (var item in all)
         bindingPathHashes = item is AnimationClip sourceClip ? sourceClip.m_ClipBindingConstant?.genericBindings?
             .Where(binding => binding.typeID == ClassIDType.Transform).Select(binding => binding.path).Distinct().Order().ToArray() ?? [] : Array.Empty<uint>() });
 }
+var serializedEvidencePath = Path.Combine(output, "serialized-evidence.json");
+SerializedEvidenceWriter.Write(all, serializedEvidencePath, Key);
 File.WriteAllText(reportPath, JsonSerializer.Serialize(new { schema = "endfield-object-inventory-v1", input,
+    serializedEvidencePath, serializedEvidenceSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(serializedEvidencePath))),
     objectCount = all.Length, loadedAssets = manager.assetsFileList.Count, objects = rows,
     decodedAnimations = false, playbackVerified = false }));
 Console.WriteLine($"Read {all.Length} objects; listed {rows.Count}; report={reportPath}");

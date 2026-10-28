@@ -4,11 +4,17 @@ using EndfieldChenTool.Framework.Domain;
 namespace EndfieldChenTool.Framework.Services;
 
 public sealed record ResolvedCharacterAssociation(BundleObjectRow Model, BundleObjectRow Avatar,
-    IReadOnlyList<BundleObjectRow> Clips, string ControllerKey, int ReferencedClipCount);
+    IReadOnlyList<BundleObjectRow> Clips, string ControllerKey, int ReferencedClipCount)
+{
+    public IReadOnlyList<BundleObjectRow> RelatedModels { get; init; } = [];
+}
 
 public static class CharacterAssociationResolver
 {
     public static ResolvedCharacterAssociation Resolve(ObjectInventory inventory, string role)
+        => Resolve(inventory, role, includeSpecialIdle: false);
+
+    public static ResolvedCharacterAssociation Resolve(ObjectInventory inventory, string role, bool includeSpecialIdle)
     {
         if (string.IsNullOrWhiteSpace(role) || !Regex.IsMatch(role, "^[a-z0-9_]+$"))
             throw new InvalidDataException("角色标识格式无效，无法安全关联模型与动画。");
@@ -18,9 +24,17 @@ public static class CharacterAssociationResolver
         var models = inventory.Objects.Where(row => row.Kind == "GameObject" && row.IsModelCandidate
             && row.HierarchyRoot && row.BoneReferenceCount > 0
             && Regex.IsMatch(row.Name, modelPattern, RegexOptions.IgnoreCase)).ToArray();
-        if (models.Length != 1) throw new InvalidDataException(models.Length == 0
-            ? "未找到具有骨骼引用的独立角色模型根节点；请检查对象列表或手动选择。"
-            : $"找到 {models.Length} 个独立角色模型候选，存在歧义；已停止自动选择。");
+        if (models.Length == 0)
+        {
+            var alternatives = inventory.Objects.Where(row => row.Kind == "GameObject" && row.IsModelCandidate
+                && row.HierarchyRoot && row.BoneReferenceCount > 0
+                && Regex.IsMatch(row.Name, "^chr_[0-9]+_" + Regex.Escape(role) + "_(?:post)?model$", RegexOptions.IgnoreCase)).ToArray();
+            throw new InvalidDataException(alternatives.Length == 0
+                ? "未找到具有骨骼引用的独立角色本体；请检查模型发现记录。"
+                : $"未找到具有可验证待机引用链的 UI 本体；发现 {alternatives.Length} 个独立 model/postmodel 候选，不能替代确认。"
+                    + (alternatives.All(row => string.IsNullOrEmpty(row.LinkedControllerKey)) ? "这些候选均没有实际控制器引用。" : "候选引用仍需核对。"));
+        }
+        if (models.Length != 1) throw new InvalidDataException($"找到 {models.Length} 个独立角色本体候选，存在歧义；已停止自动选择。有关联证据的道具子模型不计作本体歧义。");
 
         var model = models[0];
         if (!string.IsNullOrEmpty(model.ParentGameObjectKey))
@@ -46,7 +60,26 @@ public static class CharacterAssociationResolver
             return matches[0];
         }
 
-        return new(model, avatar, [Exact("overview_loop"), Exact("relax_loop")],
-            model.LinkedControllerKey, referenced.Length);
+        bool DescendsFromBody(BundleObjectRow row)
+        {
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            while (!string.IsNullOrEmpty(row.ParentGameObjectKey))
+            {
+                if (!visited.Add(row.Key)) throw new InvalidDataException("模型组成父层级存在循环。");
+                if (row.ParentGameObjectKey == model.Key) return true;
+                if (!byKey.TryGetValue(row.ParentGameObjectKey, out row!)) return false;
+            }
+            return false;
+        }
+        var idleClips = new List<BundleObjectRow> { Exact("overview_loop"), Exact("relax_loop") };
+        var specials = referenced.Where(row => Regex.IsMatch(row.Name,
+            "^A_actor_" + Regex.Escape(role) + "_ui_(?:relax_(?:sp_[0-9]+|react)|idle_to_relax)$", RegexOptions.IgnoreCase)).ToArray();
+        if (includeSpecialIdle && specials.GroupBy(row => row.Name, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+            throw new InvalidDataException("控制器引用的专属待机特殊片段存在歧义；已停止自动选择。");
+        if (includeSpecialIdle) idleClips.AddRange(specials.OrderBy(row => row.Name, StringComparer.Ordinal));
+        return new(model, avatar, idleClips,
+            model.LinkedControllerKey, referenced.Length) {
+                RelatedModels = inventory.Objects.Where(row => row.IsModelCandidate && row.Key != model.Key && DescendsFromBody(row)).ToArray()
+            };
     }
 }

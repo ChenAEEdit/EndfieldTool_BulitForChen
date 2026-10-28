@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>EndfieldChenTool</AssemblyName>
-    <Version>0.14.0</Version>
-    <InformationalVersion>0.14.0-persistent-catalog-parallel-scan</InformationalVersion>
+    <Version>0.15.0</Version>
+    <InformationalVersion>0.15.0-model-assembly-evidence</InformationalVersion>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <DefaultItemExcludes>$(DefaultItemExcludes);templates/**;runtime/**;licenses/**;sources/**;Crypto/**</DefaultItemExcludes>
   </PropertyGroup>

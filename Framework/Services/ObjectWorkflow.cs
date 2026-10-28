@@ -7,8 +7,28 @@ namespace EndfieldChenTool.Framework.Services;
 
 public sealed class ObjectWorkflow
 {
-    public async Task<ObjectOperationResult> ExecuteAsync(SavedPlan saved, string mode, string? inventoryPath,
+    public static BundleObjectRow MatchSnapshotObject(ObjectInventory inventory, BundleObjectRow original)
+    {
+        var matches = inventory.Objects.Where(row => row.Kind == original.Kind && row.PathId == original.PathId
+            && row.SourceAsset == original.SourceAsset
+            && Path.GetFileName(row.SourceBundle).Equals(Path.GetFileName(original.SourceBundle), StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length == 1 ? matches[0] : throw new InvalidDataException("调查后无法唯一恢复原对象选择：" + original.Name);
+    }
+
+    public Task<ObjectOperationResult> ExecuteAsync(SavedPlan saved, string mode, string? inventoryPath,
         ObjectExportSelection? selection, IProgress<ExtractionProgress> progress, CancellationToken token)
+        => ExecuteCoreAsync(saved, mode, inventoryPath, selection, progress, token, false);
+
+    public Task<ObjectOperationResult> ReinspectAsync(SavedPlan saved, string inventoryPath,
+        IProgress<ExtractionProgress> progress, CancellationToken token)
+        => ExecuteCoreAsync(saved, "inspect", inventoryPath, null, progress, token, true);
+
+    public Task<ObjectOperationResult> ExpandModelReferencesAsync(SavedPlan saved, string inventoryPath,
+        IProgress<ExtractionProgress> progress, CancellationToken token)
+        => ExecuteCoreAsync(saved, "inspect", inventoryPath, null, progress, token, true, true);
+
+    private async Task<ObjectOperationResult> ExecuteCoreAsync(SavedPlan saved, string mode, string? inventoryPath,
+        ObjectExportSelection? selection, IProgress<ExtractionProgress> progress, CancellationToken token, bool reuseSnapshot, bool forkSnapshot = false)
     {
         if (mode is not ("inspect" or "export" or "prepare")) throw new InvalidDataException("未知对象操作。");
         var root = new WorkspaceStore().Prepare(saved.Plan.Options);
@@ -27,6 +47,12 @@ public sealed class ObjectWorkflow
         info.Environment["PYTHONIOENCODING"] = "utf-8";
         foreach (var argument in new[] { Path.Combine(AppContext.BaseDirectory, "scripts", "object_pipeline.py"),
             "--plan", saved.FilePath, "--run-id", runId, "--mode", mode }) info.ArgumentList.Add(argument);
+        if (reuseSnapshot)
+        {
+            if (inventoryPath == null) throw new InvalidDataException("缺少可核对的旧解析快照。");
+            foreach (var argument in new[] { "--reuse-snapshot", "--inventory", inventoryPath }) info.ArgumentList.Add(argument);
+            if (forkSnapshot) info.ArgumentList.Add("--fork-snapshot");
+        }
         if (mode is "export" or "prepare")
         {
             if (inventoryPath == null || selection == null) throw new InvalidDataException("请先解析并选择对象。");
