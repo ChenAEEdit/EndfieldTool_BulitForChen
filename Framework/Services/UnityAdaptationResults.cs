@@ -60,15 +60,17 @@ public static class UnityAdaptationResults
             || config.RunId != result.RunId || config.Clips.Count != result.ExpectedAdaptedClips)
             throw new InvalidDataException("项目适配配置与当前任务不符。");
         var inputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool library = config.AdapterVersion == "0.16.0";
+        string InputPath(string relative) => UnityProjectFiles.Within(project, UnityCharacterLibrary.Input(result.UnityAssetRoot!, config.LibraryRoot, relative));
         foreach (var input in config.Inputs)
         {
-            string path = UnityProjectFiles.Within(assetRoot, input.Path);
+            string path = InputPath(input.Path);
             if (!inputPaths.Add(path) || await HashAsync(path, token) != input.Sha256)
                 throw new InvalidDataException("项目中的源文件缺失、重复或摘要已变化。");
         }
-        if (!inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.Model))
-            || !string.IsNullOrEmpty(config.Assembly) && !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.Assembly))
-            || config.Clips.Any(clip => !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, clip.Source)))
+        if (!inputPaths.Contains(InputPath(config.Model))
+            || !string.IsNullOrEmpty(config.Assembly) && !inputPaths.Contains(InputPath(config.Assembly))
+            || config.Clips.Any(clip => !inputPaths.Contains(InputPath(clip.Source)))
             || config.Rules?.InferUnits == true && (string.IsNullOrEmpty(config.TargetRig) || string.IsNullOrEmpty(config.HumanMappings)
                 || !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.TargetRig))
                 || !inputPaths.Contains(UnityProjectFiles.Within(assetRoot, config.HumanMappings))))
@@ -81,11 +83,14 @@ public static class UnityAdaptationResults
             || expectedInvocationId != null && report.InvocationId != expectedInvocationId
             || report.Clips.Count != result.ExpectedAdaptedClips || report.Clips.Any(row => !row.Adapted))
             throw new InvalidDataException("Unity 适配未完成，或结果不属于本次适配包；请查看 Unity 报告。");
+        if (library)
+            await UnityCharacterLibrary.VerifyAsync(project, config.LibraryRoot, report.LibraryReceiptSha256,
+                config.Inputs.Where(input => input.Path.StartsWith("Model/", StringComparison.Ordinal)).ToDictionary(input => input.Path, input => input.Sha256), token);
         bool inferredUnits = config.Rules?.InferUnits == true;
         if (inferredUnits && (report.UnitInference?.Enabled != true || !report.UnitInference.Passed
             || report.Outputs.All(row => !row.Path.EndsWith("/unit-inference.json", StringComparison.Ordinal))))
             throw new InvalidDataException("自动倍率推导报告缺失或未通过；不能接受该适配结果。");
-        if (config.AdapterVersion is "0.12.0" or "0.13.0" or "0.15.0")
+        if (config.AdapterVersion is "0.12.0" or "0.13.0" or "0.15.0" or "0.16.0")
         {
             foreach (var clip in report.Clips)
             {
@@ -104,7 +109,7 @@ public static class UnityAdaptationResults
             }
         }
         bool preview = config.Preview?.Enabled == true;
-        if (report.Outputs.Count != report.Clips.Count + (preview ? 3 : 2) + report.Materials.Count + (string.IsNullOrEmpty(report.HumanAvatar) ? 0 : 1) + (inferredUnits ? 1 : 0) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
+        if (report.Outputs.Count != report.Clips.Count + (library ? 1 : (preview ? 3 : 2) + report.Materials.Count) + (string.IsNullOrEmpty(report.HumanAvatar) ? 0 : 1) + (inferredUnits ? 1 : 0) || report.Outputs.Select(row => row.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Outputs.Count)
             throw new InvalidDataException("Unity 适配输出不完整或重复。");
         var outputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in report.Outputs)
@@ -115,7 +120,7 @@ public static class UnityAdaptationResults
                 throw new InvalidDataException("Unity 适配输出文件、路径或长度无效。");
             if (await HashAsync(path, token) != file.Sha256) throw new InvalidDataException("Unity 适配输出已变化，摘要不符。");
         }
-        if (!outputPaths.Contains(Path.Combine(generated, "Character.prefab")) || !outputPaths.Contains(Path.Combine(generated, "Character.controller"))
+        if (!library && !outputPaths.Contains(Path.Combine(generated, "Character.prefab")) || !outputPaths.Contains(Path.Combine(generated, "Character.controller"))
             || report.Clips.Select(clip => clip.Output).Distinct(StringComparer.OrdinalIgnoreCase).Count() != report.Clips.Count
             || config.Clips.Select(clip => clip.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != config.Clips.Count
             || config.Clips.Any(clip => !Regex.IsMatch(clip.Id, "^[0-9a-fA-F]+$")
@@ -123,8 +128,10 @@ public static class UnityAdaptationResults
                     && UnityProjectFiles.Within(project, native.Output).Equals(Path.Combine(generated, "Clip_" + clip.Id + ".anim"), StringComparison.OrdinalIgnoreCase)
                     && outputPaths.Contains(UnityProjectFiles.Within(project, native.Output))) != 1))
             throw new InvalidDataException("Unity 适配结果缺少控制器、Prefab 或本次选择的动画。");
-        string? previewPath = preview ? Path.Combine(generated, "CharacterPreview.unity") : null;
-        if (preview && (!report.PreviewCreated || string.IsNullOrEmpty(report.PreviewScene)
+        string? previewPath = preview ? (library ? UnityProjectFiles.Within(project, UnityCharacterLibrary.PreviewScene) : Path.Combine(generated, "CharacterPreview.unity")) : null;
+        if (library && preview && (!report.LibraryPreviewAvailable || report.PreviewScene != UnityCharacterLibrary.PreviewScene))
+            throw new InvalidDataException("共享预览入口不完整。");
+        if (!library && preview && (!report.PreviewCreated || string.IsNullOrEmpty(report.PreviewScene)
             || !UnityProjectFiles.Within(project, report.PreviewScene).Equals(previewPath, StringComparison.OrdinalIgnoreCase)
             || !outputPaths.Contains(previewPath!) || config.Clips.Any(clip => report.Clips.All(native =>
                 native.Output != result.UnityAssetRoot + "/Generated/Clip_" + clip.Id + ".anim" || native.State != "Base Layer.Clip_" + clip.Id))))
@@ -138,11 +145,12 @@ public static class UnityAdaptationResults
         foreach (var material in report.Materials)
         {
             string path = UnityProjectFiles.Within(project, material.Output);
-            if (!path.StartsWith(Path.Combine(generated, "Materials") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                || Path.GetExtension(path) != ".mat" || !outputPaths.Contains(path) || !materialPaths.Add(path))
+            string materialRoot = library ? UnityProjectFiles.Within(project, config.LibraryRoot + "/Generated/Materials") : Path.Combine(generated, "Materials");
+            if (!path.StartsWith(materialRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || Path.GetExtension(path) != ".mat" || !library && !outputPaths.Contains(path) || !materialPaths.Add(path))
                 throw new InvalidDataException("生成的预览材质路径无效或重复。");
         }
-        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0" or "0.15.0")
+        if (config.AdapterVersion is "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0" or "0.15.0" or "0.16.0")
         {
             var metadata = inputPaths.Concat(outputPaths).Concat(new[] {
                 UnityProjectFiles.Within(project, "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs"),
@@ -164,7 +172,7 @@ public static class UnityAdaptationResults
         token.ThrowIfCancellationRequested();
         result = result with { Status = "adapted_unverified", Adapted = true, PlaybackVerified = false,
             UnityReportPath = reportPath, UnityPreviewScene = previewPath, DiagnosticReportPath = UnityDiagnosticReport.Export(saved),
-            Message = $"已读取 Unity 原生适配结果：{report.Clips.Count} 条动画" + (preview ? "及独立预览场景" : "") + "；尚未验证播放。" };
+            Message = $"已读取 Unity 原生适配结果：{report.Clips.Count} 条动画" + (preview ? (library ? "及共享角色预览入口" : "及独立预览场景") : "") + "；尚未验证播放。" };
         JsonFiles.Write(Path.Combine(taskRoot, "objects", result.RunId, "operation.json"), result);
         JsonFiles.Write(Path.Combine(taskRoot, "objects", "preparation.json"), result);
         if (ObjectWorkflow.ReadResult(saved)?.RunId == result.RunId)
@@ -190,6 +198,7 @@ public static class UnityAdaptationResults
         public string TaskId { get; init; } = "";
         public string RunId { get; init; } = "";
         public string Model { get; init; } = "";
+        public string LibraryRoot { get; init; } = "";
         public string Assembly { get; init; } = "";
         public string AdapterVersion { get; init; } = "";
         public string TargetRig { get; init; } = "";
@@ -214,6 +223,8 @@ public static class UnityAdaptationResults
         public bool Adapted { get; init; }
         public bool PlaybackVerified { get; init; }
         public bool PreviewCreated { get; init; }
+        public bool LibraryPreviewAvailable { get; init; }
+        public string LibraryReceiptSha256 { get; init; } = "";
         public UnitInference? UnitInference { get; init; }
         public string PreviewScene { get; init; } = "";
         public string? HumanAvatar { get; init; }

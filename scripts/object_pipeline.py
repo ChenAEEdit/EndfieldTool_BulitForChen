@@ -209,7 +209,17 @@ def export_objects(inventory_path, selection_path, bundle_result, plan_bytes):
         if avatar:
             arguments += ["--avatar-path-id", avatar["pathId"], "--avatar-source-asset", avatar["sourceAsset"],
                           "--avatar-source-bundle", avatar["sourceBundle"]]
-        code = run_tool("runtime/object-model/ModelExportCompat.exe", arguments)
+        from character_model_cache import model_revision, locked_cache, restore, publish as cache_model
+        revision = model_revision(json.loads(plan_bytes.decode('utf-8-sig')), bundle_result, inventory, root, avatar)
+        STATE['result']['modelRevision'] = revision
+        workspace = json.loads(plan_bytes.decode('utf-8-sig'))['options']['workspaceDirectory']
+        with locked_cache(workspace, revision) as cache:
+            reused = restore(cache, output / 'model', report)
+            code = 0 if reused else run_tool("runtime/object-model/ModelExportCompat.exe", arguments)
+            exported_model = read(report) if report.is_file() else {}
+            if not reused and code == 0 and exported_model.get('fbx_bytes', 0) > 0 and not exported_model.get('export_error'):
+                cache_model(cache, output / 'model', exported_model)
+        STATE['result']['modelExportReused'] = reused
         model = read(report) if report.is_file() else {}
         if code == 0 and model.get("fbx_bytes", 0) > 0 and (model.get("selected") or {}).get("mesh_count", 0) > 0 and not model.get("export_error"):
             register_output(model["fbx"], "FBX")

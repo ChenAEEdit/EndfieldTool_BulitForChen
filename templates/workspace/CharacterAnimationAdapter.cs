@@ -26,7 +26,7 @@ public static class CharacterAnimationAdapter
     [Serializable] public class Preview { public bool enabled; }
     [Serializable] public class Config
     {
-        public string schema, taskId, runId, model, modelKey, adapterVersion, targetRig, humanMappings, assembly;
+        public string schema, taskId, runId, model, modelKey, adapterVersion, targetRig, humanMappings, assembly, libraryRoot;
         public float modelImportScale = 1;
         public Rules rules;
         public ClipInput[] clips;
@@ -40,7 +40,7 @@ public static class CharacterAnimationAdapter
     [Serializable] public class ModelAssembly { public string schema, bodyKey, evidence, sourceEvidenceSha256; public AssemblyNode[] nodes; public bool visualDependenciesResolved; public string[] unsupportedVisualComponents; public LodGroupInput[] lodGroups; }
     [Serializable] public class ClipReport
     {
-        public string id, name, output, error, state;
+        public string id, name, output, error, state, motionKey;
         public int trackAuditVersion = 1;
         public int sourceBindings, sourceObjectBindings, retainedBindings, skippedAnimator, skippedOther, droppedSceneTranslation,
             remappedBindings, excludedBindings, repairedTangents;
@@ -114,6 +114,8 @@ public static class CharacterAnimationAdapter
         public float modelImportScale, positionScale;
         public UnitInferenceReport unitInference;
         public string humanAvatar, humanMappingSource;
+        public string libraryReceiptSha256;
+        public bool libraryModelReused, libraryPreviewAvailable;
     }
 
     [Serializable] public class UnitInferenceReport
@@ -243,7 +245,8 @@ public static class CharacterAnimationAdapter
         if (config.inputs == null || report.outputs == null || report.outputs.Length == 0)
             throw new Exception("已有结果缺少文件清单，无法安全打开。");
         foreach (var input in config.inputs)
-            if (Hash(Local(basePath, input.path)) != input.sha256) throw new Exception("预览源文件已变化，请保留修改并生成新包。");
+            if (Hash(InputPath(config, basePath, input.path)) != input.sha256) throw new Exception("预览源文件已变化，请保留修改并生成新包。");
+        if (!string.IsNullOrEmpty(config.libraryRoot)) ReadLibrary(config, report.libraryReceiptSha256);
         foreach (var input in config.clips)
         {
             var source = AssetDatabase.LoadAssetAtPath<AnimationClip>(Local(basePath, input.source));
@@ -261,9 +264,9 @@ public static class CharacterAnimationAdapter
         }
         if (report.clips.Any(item => item.humanoid) && (report.humanAvatar != generated + "/CharacterHumanAvatar.asset" || !outputs.Contains(report.humanAvatar)))
             throw new Exception("人形动画缺少配套 Avatar，请保留原包并重新生成。");
-        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0" || config.adapterVersion == "0.15.0")
+        if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0" || config.adapterVersion == "0.15.0" || config.adapterVersion == "0.16.0")
         {
-            var expected = new HashSet<string>(config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs)
+            var expected = new HashSet<string>(config.inputs.Select(input => InputPath(config, basePath, input.path)).Concat(outputs)
                 .Concat(new[] { "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs", "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs" })
                 .Select(path => path + ".meta"), StringComparer.OrdinalIgnoreCase);
             if (report.metadata == null || report.metadata.Length != expected.Count) throw new Exception("生成结果的元数据清单不完整。");
@@ -278,6 +281,12 @@ public static class CharacterAnimationAdapter
     {
         configPath = configPath.Replace('\\', '/');
         var report = ValidateExistingResult(configPath);
+        var config = JsonUtility.FromJson<Config>(File.ReadAllText(configPath));
+        if (!string.IsNullOrEmpty(config.libraryRoot))
+        {
+            if (!report.libraryPreviewAvailable) throw new Exception("本包未启用共享预览。");
+            return OpenLibraryPreview(configPath, config, report, play);
+        }
         string scenePath = Path.GetDirectoryName(configPath).Replace('\\', '/') + "/Generated/CharacterPreview.unity";
         if (!report.previewCreated || report.previewScene != scenePath || !report.outputs.Any(item => item.path == scenePath))
             throw new Exception("本包未生成预览场景。请在工作台勾选生成预览场景后建立新包。");
@@ -839,7 +848,7 @@ public static class CharacterAnimationAdapter
     [Serializable] class HumanMappings { public string schema = ""; public HumanMappingCandidate[] candidates = new HumanMappingCandidate[0]; }
     static HumanMappingCandidate SelectHumanMapping(GameObject root, string basePath)
     {
-        string file = basePath + "/Model/avatar_human_candidates.json";
+        string file = ModelBase(basePath) + "/Model/avatar_human_candidates.json";
         if (!File.Exists(file)) throw new Exception("此动画需要 Humanoid 主体通道。请使用新版工具重新生成包含真实人形映射的包。");
         var mappings = JsonUtility.FromJson<HumanMappings>(File.ReadAllText(file));
         if (mappings.schema != "endfield-human-mapping-candidates-v1" || mappings.candidates == null)
@@ -876,7 +885,7 @@ public static class CharacterAnimationAdapter
         return ordered[ordered.Length / 2];
     }
 
-    static UnitInferenceReport InferUnitScales(Config config, string basePath, string modelPath, ModelImporter importer)
+    static UnitInferenceReport InferUnitScales(Config config, string basePath, string modelPath, ModelImporter importer, bool reuseModel = false)
     {
         var report = new UnitInferenceReport { enabled = true,
             targetRigEvidence = config.targetRig, humanMappingEvidence = config.humanMappings,
@@ -904,8 +913,8 @@ public static class CharacterAnimationAdapter
             if (mappings == null || mappings.schema != "endfield-human-mapping-candidates-v1" || mappings.candidates == null)
                 throw new Exception("目标模型语义映射证据格式无效。");
 
-            importer.globalScale = 1;
-            importer.SaveAndReimport();
+            float startingScale = reuseModel ? importer.globalScale : 1;
+            if (!reuseModel) { importer.globalScale = 1; importer.SaveAndReimport(); }
             Func<Dictionary<string, float>> measureModel = () =>
             {
                 var model = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
@@ -916,7 +925,10 @@ public static class CharacterAnimationAdapter
                 foreach (var node in rig.nodes.Where(node => node.reference == "skin-bind-pose" && !string.IsNullOrEmpty(node.parent)
                     && nodes.TryGetValue(node.parent, out var parent) && parent.reference == "skin-bind-pose"))
                 {
-                    if (!transforms.TryGetValue(node.path, out var child) || !transforms.TryGetValue(node.parent, out var parent)) continue;
+                    string childPath = MatchPath(node.path, transforms.Keys), parentPath = MatchPath(node.parent, transforms.Keys);
+                    if (childPath == null || parentPath == null) continue;
+                    var child = transforms[childPath]; var parent = transforms[parentPath];
+                    if (child.parent != parent) continue;
                     float expected = Vector3.Distance(worlds[node.path].MultiplyPoint3x4(Vector3.zero), worlds[node.parent].MultiplyPoint3x4(Vector3.zero));
                     float actual = Vector3.Distance(child.position, parent.position);
                     if (expected > .02f && actual > .0000001f && Finite(expected) && Finite(actual)) ratios[node.path] = expected / actual;
@@ -925,15 +937,16 @@ public static class CharacterAnimationAdapter
             };
             var before = measureModel();
             if (before.Count < 15) throw new Exception("用于模型倍率推导的骨段不足 15 条。");
-            float modelRatio = Median(before.Values);
+            float modelRatio = Median(before.Values) * startingScale;
             report.measuredModelSegments = before.Count;
-            report.modelRatioDeviation = before.Values.Max(value => Mathf.Abs(value / modelRatio - 1));
+            report.modelRatioDeviation = before.Values.Max(value => Mathf.Abs(value * startingScale / modelRatio - 1));
             if (!Finite(modelRatio) || modelRatio < .0001f || modelRatio > 10000 || report.modelRatioDeviation > .01f)
                 throw new Exception("模型骨段倍率不一致或超出有效范围；已停止自动推导。");
             float decimalScale = Mathf.Pow(10, Mathf.Round(Mathf.Log10(modelRatio)));
             config.modelImportScale = Mathf.Abs(decimalScale / modelRatio - 1) < .0001f ? decimalScale : modelRatio;
-            importer.globalScale = config.modelImportScale;
-            importer.SaveAndReimport();
+            if (reuseModel && Mathf.Abs(importer.globalScale / config.modelImportScale - 1) > .0001f)
+                throw new Exception("已有角色模型与新倍率测量不一致；请使用新模型版本。");
+            if (!reuseModel) { importer.globalScale = config.modelImportScale; importer.SaveAndReimport(); }
             var after = measureModel();
             report.correctedRelativeError = after.Values.Max(value => Mathf.Abs(value - 1));
             if (after.Count < 15 || report.correctedRelativeError > .01f)
@@ -1023,7 +1036,9 @@ public static class CharacterAnimationAdapter
             throw new Exception("本包已生成内容。请重新生成独立适配包，保留已有修改。");
         File.WriteAllText(reportPath, JsonUtility.ToJson(report, true));
         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-        string modelPath = Local(basePath, config.model);
+        bool library = !string.IsNullOrEmpty(config.libraryRoot);
+        if (library != (config.adapterVersion == "0.16.0")) throw new Exception("角色库配置版本不符。");
+        string modelPath = InputPath(config, basePath, config.model);
         var importer = AssetImporter.GetAtPath(modelPath) as ModelImporter;
         var scene = EditorSceneManager.NewPreviewScene();
         var details = new List<ClipReport>(); var outputs = new List<string>();
@@ -1031,22 +1046,30 @@ public static class CharacterAnimationAdapter
         {
             if (importer == null) throw new Exception("模型未被 Unity 导入。");
             foreach (var input in config.inputs)
-                if (Hash(Local(basePath, input.path)) != input.sha256) throw new Exception("输入文件摘要已变化：" + input.path);
+                if (Hash(InputPath(config, basePath, input.path)) != input.sha256) throw new Exception("输入文件摘要已变化：" + input.path);
+            var existingModel = library ? ReadLibrary(config, null, true) : null;
+            report.libraryModelReused = existingModel != null;
             if (config.rules.inferUnits)
             {
-                report.unitInference = InferUnitScales(config, basePath, modelPath, importer);
+                report.unitInference = InferUnitScales(config, basePath, modelPath, importer, existingModel != null);
                 report.modelImportScale = config.modelImportScale;
                 report.positionScale = config.rules.positionScale;
                 File.WriteAllText(generated + "/unit-inference.json", JsonUtility.ToJson(report.unitInference, true));
                 outputs.Add(generated + "/unit-inference.json");
             }
             if (!(config.modelImportScale > 0) || !Finite(config.modelImportScale)) throw new Exception("模型单位倍率无效。");
+            if (existingModel == null)
+            {
             importer.importAnimation = false; importer.animationType = ModelImporterAnimationType.Generic;
             importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel; importer.optimizeGameObjects = false;
             importer.preserveHierarchy = true; importer.globalScale = config.modelImportScale;
             importer.skinWeights = ModelImporterSkinWeights.Custom; importer.maxBonesPerVertex = 4; importer.minBoneWeight = 0.00001f;
             importer.SaveAndReimport();
-            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
+            }
+            else if (Mathf.Abs(existingModel.modelScale / config.modelImportScale - 1) > .0001f
+                || Mathf.Abs(existingModel.positionScale / config.rules.positionScale - 1) > .0001f)
+                throw new Exception("角色库单位与本次动作不一致，已保留现有模型。");
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(existingModel == null ? modelPath : LibraryRoot(config) + "/Generated/Character.prefab");
             if (!prefab) throw new Exception("无法读取已导入模型。");
             var root = UnityEngine.Object.Instantiate(prefab);
             UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(root, scene);
@@ -1055,9 +1078,15 @@ public static class CharacterAnimationAdapter
             var avatar = AssetDatabase.LoadAllAssetsAtPath(modelPath).OfType<Avatar>().SingleOrDefault(item => item.isValid && !item.isHuman);
             if (!avatar) throw new Exception("模型没有有效的 Generic Avatar。");
             Avatar humanAvatar = null;
-            report.materials = PrepareMaterials(root, basePath, generated, outputs);
+            var modelOutputs = library ? new List<string>() : outputs;
+            report.materials = existingModel != null ? existingModel.materials : PrepareMaterials(root, basePath, library ? LibraryRoot(config) + "/Generated" : generated, modelOutputs);
             report.diagnostics = Diagnose(root, report.materials);
             if (!report.diagnostics.geometryPassed) throw new Exception("模型诊断发现非法骨骼、权重、路径或顶点，请查看诊断报告。");
+            if (library)
+            {
+                if (existingModel == null) PublishLibrary(root, config, report.materials, modelOutputs);
+                report.libraryReceiptSha256 = Hash(LibraryRoot(config) + "/Generated/library.json");
+            }
             string controllerPath = generated + "/Character.controller";
             var controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath); outputs.Add(controllerPath);
             foreach (var input in config.clips)
@@ -1098,6 +1127,8 @@ public static class CharacterAnimationAdapter
                         AssetDatabase.CreateAsset(humanAvatar, report.humanAvatar); outputs.Add(report.humanAvatar);
                     }
                     var clip = CreateDirectClip(root, source, config.rules, item, item.humanoid, sourceRig); clip.name = input.name;
+                    item.motionKey = TextHash(Hash(Local(basePath, input.source)) + JsonUtility.ToJson(config.rules)
+                        + (sourceRig == null ? "" : Hash(Local(basePath, input.sourceRig))));
                     item.output = generated + "/Clip_" + input.id + ".anim";
                     AssetDatabase.CreateAsset(clip, item.output); outputs.Add(item.output);
                     string stateName = "Clip_" + input.id;
@@ -1110,29 +1141,29 @@ public static class CharacterAnimationAdapter
                 catch (Exception error) { item.error = error.Message; }
                 finally { CompleteTrackEvidence(item, evidence); }
             }
-            var animator = root.GetComponent<Animator>() ?? root.AddComponent<Animator>();
+            var animator = root.GetComponent<Animator>(); if (!animator) animator = root.AddComponent<Animator>();
             animator.avatar = details.Count > 0 && details[0].humanoid ? humanAvatar : avatar;
             animator.runtimeAnimatorController = controller; animator.applyRootMotion = false;
             animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
             string prefabPath = generated + "/Character.prefab";
-            PrefabUtility.SaveAsPrefabAsset(root, prefabPath); outputs.Add(prefabPath);
+            if (!library) { PrefabUtility.SaveAsPrefabAsset(root, prefabPath); outputs.Add(prefabPath); }
             AssetDatabase.SaveAssets();
             if (config.preview != null && config.preview.enabled && details.Count == config.clips.Length && details.All(item => item.adapted))
             {
-                report.previewScene = generated + "/CharacterPreview.unity";
-                CreatePreview(prefabPath, details, report.previewScene);
-                outputs.Add(report.previewScene); report.previewCreated = true;
+                report.previewScene = library ? SharedPreviewScene : generated + "/CharacterPreview.unity";
+                if (library) report.libraryPreviewAvailable = true;
+                else { CreatePreview(prefabPath, details, report.previewScene); outputs.Add(report.previewScene); report.previewCreated = true; }
             }
             foreach (var input in config.inputs)
-                if (Hash(Local(basePath, input.path)) != input.sha256) throw new Exception("生成期间输入文件发生变化：" + input.path);
+                if (Hash(InputPath(config, basePath, input.path)) != input.sha256) throw new Exception("生成期间输入文件发生变化：" + input.path);
             if (Hash(configPath) != report.configSha256) throw new Exception("生成期间适配配置发生变化。");
             report.adapted = details.Count == config.clips.Length && details.All(item => item.adapted);
             report.status = report.adapted ? "adapted_unverified" : "partial";
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             report.outputs = outputs.Select(path => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) }).ToArray();
-            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0")
+            if (config.adapterVersion == "0.9.0" || config.adapterVersion == "0.10.0" || config.adapterVersion == "0.11.1" || config.adapterVersion == "0.12.0" || config.adapterVersion == "0.13.0" || config.adapterVersion == "0.15.0" || config.adapterVersion == "0.16.0")
             {
-                var metadataPaths = config.inputs.Select(input => Local(basePath, input.path)).Concat(outputs).Concat(new[] {
+                var metadataPaths = config.inputs.Select(input => InputPath(config, basePath, input.path)).Concat(outputs).Concat(new[] {
                     "Assets/EndfieldCharacterWorkbench/Editor/CharacterAnimationAdapter.cs",
                     "Assets/EndfieldCharacterWorkbench/Runtime/CharacterPreviewControls.cs" })
                     .Select(path => path + ".meta").Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal);
@@ -1206,7 +1237,7 @@ public static class CharacterAnimationAdapter
 
     static MaterialPreview[] PrepareMaterials(GameObject root, string basePath, string generated, List<string> outputs)
     {
-        string model = basePath + "/Model", metadata = model + "/material_properties.json";
+        string model = ModelBase(basePath) + "/Model", metadata = model + "/material_properties.json";
         if (!File.Exists(metadata)) throw new Exception("缺少真实材质属性，无法确认基础贴图映射。");
         var definitions = JsonUtility.FromJson<MaterialMetadata>(File.ReadAllText(metadata)).materials;
         var created = new Dictionary<string, Material>(); var report = new List<MaterialPreview>();
@@ -1291,12 +1322,11 @@ public static class CharacterAnimationAdapter
         result.warnings = warnings.ToArray(); return result;
     }
 
-    static void CreatePreview(string prefabPath, List<ClipReport> clips, string scenePath)
+    static void CreatePreview(string prefabPath, List<ClipReport> clips, string scenePath, RuntimeAnimatorController controller = null, Avatar[] avatars = null, string libraryRoot = "")
     {
         var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-        // Batch startup can contain an empty untitled scene, which Unity refuses to extend additively.
-        // Replacing that empty startup scene is safe; interactive scenes keep the additive path.
-        bool emptyBatchStartup = Application.isBatchMode && active.IsValid() && string.IsNullOrEmpty(active.path)
+        // Unity cannot extend an untitled startup scene additively. An empty startup scene can be replaced.
+        bool emptyBatchStartup = active.IsValid() && string.IsNullOrEmpty(active.path)
             && active.rootCount == 0;
         var preview = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, emptyBatchStartup ? NewSceneMode.Single : NewSceneMode.Additive);
         try
@@ -1304,6 +1334,12 @@ public static class CharacterAnimationAdapter
             UnityEngine.SceneManagement.SceneManager.SetActiveScene(preview);
             var asset = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
             var character = (GameObject)PrefabUtility.InstantiatePrefab(asset, preview);
+            if (controller)
+            {
+                var previewAnimator = character.GetComponent<Animator>();
+                previewAnimator.runtimeAnimatorController = controller;
+                previewAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate; previewAnimator.applyRootMotion = false;
+            }
             var renderers = character.GetComponentsInChildren<Renderer>(true).Where(item => item.enabled && item.gameObject.activeInHierarchy).ToArray();
             if (renderers.Length == 0) throw new Exception("预览模型没有可见 Renderer。");
             Bounds bounds = renderers[0].bounds;
@@ -1336,6 +1372,7 @@ public static class CharacterAnimationAdapter
             RenderSettings.ambientLight = new Color(.55f, .55f, .55f);
             var controls = new GameObject("Animation Preview Controls").AddComponent<EndfieldCharacterWorkbench.CharacterPreviewControls>();
             controls.animator = character.GetComponent<Animator>(); controls.previewCamera = camera;
+            controls.characterLibraryRoot = libraryRoot;
             controls.clips = clips.Select(item => AssetDatabase.LoadAssetAtPath<AnimationClip>(item.output)).ToArray();
             controls.displayNames = clips.Select(item => item.name).ToArray();
             var genericAvatar = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(character.GetComponent<Animator>().avatar)).OfType<Avatar>().FirstOrDefault(item => item.isValid && !item.isHuman);
@@ -1346,8 +1383,9 @@ public static class CharacterAnimationAdapter
                 genericAvatar = AssetDatabase.LoadAllAssetsAtPath(modelAsset).OfType<Avatar>().FirstOrDefault(item => item.isValid && !item.isHuman);
             }
             var humanAvatar = AssetDatabase.LoadAssetAtPath<Avatar>(Path.GetDirectoryName(prefabPath).Replace('\\', '/') + "/CharacterHumanAvatar.asset");
-            controls.clipAvatars = clips.Select(item => item.humanoid ? humanAvatar : genericAvatar).ToArray();
+            controls.clipAvatars = avatars ?? clips.Select(item => item.humanoid ? humanAvatar : genericAvatar).ToArray();
             controls.statePaths = clips.Select(item => item.state).ToArray(); controls.cameraPivot = bounds.center; controls.cameraDistance = distance;
+            controls.motionKeys = clips.Select(item => item.motionKey ?? "").ToArray();
             controls.cameraRadius = radius;
             // Save the imported rest pose. Runtime controls initialize animation only after Play begins.
             if (!EditorSceneManager.SaveScene(preview, scenePath)) throw new Exception("预览场景保存失败。");
@@ -1358,6 +1396,154 @@ public static class CharacterAnimationAdapter
             if (active.IsValid() && active.isLoaded) UnityEngine.SceneManagement.SceneManager.SetActiveScene(active);
             EditorSceneManager.CloseScene(preview, true);
         }
+    }
+
+    const string SharedPreviewScene = "Assets/EndfieldCharacterWorkbench/Preview/CharacterPreview.unity";
+    [Serializable] class LibraryRecord
+    {
+        public string schema = "endfield-character-library-v1", root;
+        public float modelScale, positionScale;
+        public InputFile[] inputs;
+        public OutputFile[] outputs, metadata;
+        public MaterialPreview[] materials;
+    }
+    [Serializable] class PreviewStamp { public string sha256, metaSha256; }
+    static string LibraryRoot(Config config)
+    {
+        if (!Regex.IsMatch(config.libraryRoot ?? "", "^Assets/EndfieldCharacterLibrary/[A-F0-9]{64}$")) throw new Exception("角色库目录无效。");
+        for (var path = new DirectoryInfo(config.libraryRoot); path != null; path = path.Parent)
+            if (path.Exists && (path.Attributes & FileAttributes.ReparsePoint) != 0) throw new Exception("角色库不通过目录链接。");
+        return config.libraryRoot;
+    }
+    static string InputPath(Config config, string basePath, string relative)
+        => Local(!string.IsNullOrEmpty(config.libraryRoot) && relative.StartsWith("Model/", StringComparison.Ordinal) ? LibraryRoot(config) : basePath, relative);
+    static string ModelBase(string basePath)
+    {
+        var config = JsonUtility.FromJson<Config>(File.ReadAllText(basePath + "/adaptation.json"));
+        return string.IsNullOrEmpty(config.libraryRoot) ? basePath : LibraryRoot(config);
+    }
+    static string TextHash(string value)
+    {
+        using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(value))).Replace("-", "");
+    }
+    static OutputFile Describe(string path) => new OutputFile { path = path, bytes = new FileInfo(path).Length, sha256 = Hash(path) };
+    static LibraryRecord ReadLibrary(Config config, string expectedHash = null, bool optional = false)
+    {
+        string root = LibraryRoot(config), recordPath = root + "/Generated/library.json";
+        if (!File.Exists(recordPath))
+        {
+            if (optional && !Directory.Exists(root + "/Generated")) return null;
+            throw new Exception("角色库生成记录缺失或上次生成未完成；已有文件保留。");
+        }
+        if (expectedHash != null && Hash(recordPath) != expectedHash) throw new Exception("角色库记录已变化。");
+        var record = JsonUtility.FromJson<LibraryRecord>(File.ReadAllText(recordPath));
+        var inputs = config.inputs.Where(input => input.path.StartsWith("Model/", StringComparison.Ordinal)).ToArray();
+        if (record.schema != "endfield-character-library-v1" || record.root != root || record.inputs == null || record.outputs == null || record.metadata == null
+            || record.inputs.Length != inputs.Length || record.inputs.Any(input => !inputs.Any(source => source.path == input.path && source.sha256 == input.sha256))
+            || !record.outputs.Any(output => output.path == root + "/Generated/Character.prefab")) throw new Exception("动作包与角色模型版本不符。");
+        var expectedMetadata = record.inputs.Select(input => Local(root, input.path)).Concat(record.outputs.Select(output => output.path))
+            .Select(path => path + ".meta").ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (record.metadata.Length != expectedMetadata.Count || record.metadata.Any(file => !expectedMetadata.Remove(file.path)))
+            throw new Exception("角色库元数据清单不完整或重复。");
+        foreach (var input in inputs) if (Hash(Local(root, input.path)) != input.sha256) throw new Exception("角色库源文件已修改。");
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in record.outputs.Concat(record.metadata))
+        {
+            if (!file.path.StartsWith(root + "/", StringComparison.Ordinal) || !paths.Add(file.path)
+                || Local(root, file.path.Substring(root.Length + 1)) != file.path
+                || !File.Exists(file.path) || new FileInfo(file.path).Length != file.bytes || Hash(file.path) != file.sha256)
+                throw new Exception("角色库资源或导入设置已修改；不会覆盖已有编辑。");
+        }
+        return record;
+    }
+    static void PublishLibrary(GameObject root, Config config, MaterialPreview[] materials, List<string> outputs)
+    {
+        string folder = LibraryRoot(config) + "/Generated";
+        var animator = root.GetComponent<Animator>(); if (!animator) animator = root.AddComponent<Animator>();
+        animator.runtimeAnimatorController = null;
+        animator.cullingMode = AnimatorCullingMode.AlwaysAnimate; animator.applyRootMotion = false;
+        string path = folder + "/Character.prefab";
+        PrefabUtility.SaveAsPrefabAsset(root, path); outputs.Add(path);
+        AssetDatabase.SaveAssets(); AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        var record = new LibraryRecord { root = config.libraryRoot, modelScale = config.modelImportScale, positionScale = config.rules.positionScale,
+            inputs = config.inputs.Where(input => input.path.StartsWith("Model/", StringComparison.Ordinal)).ToArray(),
+            outputs = outputs.Select(Describe).ToArray(), materials = materials };
+        record.metadata = record.inputs.Select(input => Local(config.libraryRoot, input.path)).Concat(outputs).Select(file => file + ".meta")
+            .Distinct(StringComparer.Ordinal).OrderBy(file => file, StringComparer.Ordinal).Select(Describe).ToArray();
+        File.WriteAllText(folder + "/library.json", JsonUtility.ToJson(record, true));
+    }
+    static string OpenLibraryPreview(string configPath, Config config, BuildReport current, bool play)
+    {
+        var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+        if (EditorApplication.isPlayingOrWillChangePlaymode)
+        {
+            var running = UnityEngine.Object.FindFirstObjectByType<EndfieldCharacterWorkbench.CharacterPreviewControls>();
+            if (active.path != SharedPreviewScene || !running || running.characterLibraryRoot != config.libraryRoot)
+                throw new Exception("请先退出当前 Play，再切换角色预览。");
+            string output = current.clips.First().output;
+            int selected = Array.FindIndex(running.motionKeys, key => key == current.clips.First().motionKey);
+            if (selected < 0) selected = Array.FindIndex(running.clips, clip => AssetDatabase.GetAssetPath(clip) == output);
+            if (selected < 0) throw new Exception("当前预览尚未载入这批动作，请退出 Play 后重新打开。");
+            running.SelectClip(selected); return SharedPreviewScene;
+        }
+        if (Application.isBatchMode && active.isDirty && active.rootCount > 0) throw new Exception("当前场景有未保存内容。");
+        if (!Application.isBatchMode && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) throw new OperationCanceledException("当前场景已保留。");
+        string stampPath = "Library/EndfieldCharacterWorkbench/shared-preview.json";
+        if (File.Exists(SharedPreviewScene))
+        {
+            var stamp = File.Exists(stampPath) ? JsonUtility.FromJson<PreviewStamp>(File.ReadAllText(stampPath)) : null;
+            if (stamp == null || stamp.sha256 != Hash(SharedPreviewScene) || stamp.metaSha256 != Hash(SharedPreviewScene + ".meta"))
+                throw new Exception("共享预览场景已被修改，已保留；请另存自定义场景后恢复工具预览。");
+        }
+        var candidates = Directory.GetFiles("Assets/EndfieldCharacterExports", "adaptation.json", SearchOption.AllDirectories)
+            .Select(path => path.Replace('\\', '/')).Where(path => Regex.IsMatch(path, "^Assets/EndfieldCharacterExports/[0-9a-f]{8}_[0-9a-f]{32}/adaptation.json$")).ToArray();
+        var clips = new List<ClipReport>(); var avatars = new List<Avatar>(); var seen = new HashSet<string>();
+        var generic = AssetDatabase.LoadAllAssetsAtPath(InputPath(config, Path.GetDirectoryName(configPath), config.model)).OfType<Avatar>().Single(avatar => avatar.isValid && !avatar.isHuman);
+        foreach (string path in candidates.Concat(new[] { configPath }).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal))
+        {
+            try
+            {
+                if (!File.Exists(path)) { Debug.LogWarning("跳过已移除的历史动作包：" + path); continue; }
+                var itemConfig = JsonUtility.FromJson<Config>(File.ReadAllText(path));
+                if (itemConfig.libraryRoot != config.libraryRoot) continue;
+                var report = path == configPath ? current : ValidateExistingResult(path);
+                foreach (var item in report.clips)
+                {
+                    if (!seen.Add(item.motionKey)) continue;
+                    clips.Add(item); avatars.Add(item.humanoid ? AssetDatabase.LoadAssetAtPath<Avatar>(report.humanAvatar) : generic);
+                }
+            }
+            catch (Exception error) { if (path == configPath) throw; Debug.LogWarning("历史动作包未通过核对，跳过：" + path + "；" + error.Message); }
+        }
+        if (clips.Count == 0) throw new Exception("没有可播放的已核对动作。");
+        string collection = TextHash(config.libraryRoot + "|" + string.Join("|", clips.Select(item => item.motionKey + ":" + item.output + ":" + Hash(item.output))));
+        string controllerPath = "Assets/EndfieldCharacterWorkbench/Preview/Controllers/" + collection + ".controller";
+        Directory.CreateDirectory(Path.GetDirectoryName(controllerPath)); AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
+        string controllerStamp = "Library/EndfieldCharacterWorkbench/controller-" + collection + ".sha256";
+        if (controller)
+        {
+            if (!File.Exists(controllerStamp) || File.ReadAllText(controllerStamp) != Hash(controllerPath) + Hash(controllerPath + ".meta"))
+                throw new Exception("预览控制器已修改，已保留。");
+        }
+        else
+        {
+            controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath);
+            foreach (var item in clips)
+            {
+                var state = controller.layers[0].stateMachine.AddState("Motion_" + item.motionKey); state.motion = AssetDatabase.LoadAssetAtPath<AnimationClip>(item.output); state.writeDefaultValues = true;
+            }
+            AssetDatabase.SaveAssets(); AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            File.WriteAllText(controllerStamp, Hash(controllerPath) + Hash(controllerPath + ".meta"));
+        }
+        var previewClips = clips.Select(item => new ClipReport { name = item.name, output = item.output, state = "Base Layer.Motion_" + item.motionKey, humanoid = item.humanoid, motionKey = item.motionKey }).ToList();
+        // Replace the managed preview scene; other scenes are saved above and retain their files.
+        if (active.path == SharedPreviewScene || string.IsNullOrEmpty(active.path)) EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        CreatePreview(LibraryRoot(config) + "/Generated/Character.prefab", previewClips, SharedPreviewScene, controller, avatars.ToArray(), config.libraryRoot);
+        File.WriteAllText(stampPath, JsonUtility.ToJson(new PreviewStamp { sha256 = Hash(SharedPreviewScene), metaSha256 = Hash(SharedPreviewScene + ".meta") }));
+        EditorSceneManager.OpenScene(SharedPreviewScene, OpenSceneMode.Single);
+        if (play) EditorApplication.isPlaying = true;
+        return SharedPreviewScene;
     }
 
     static string Local(string root, string relative)

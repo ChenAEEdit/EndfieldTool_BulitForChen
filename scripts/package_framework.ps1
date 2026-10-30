@@ -112,7 +112,7 @@ foreach ($runtimeName in $exporterBuilds.Keys) {
         Copy-Item -LiteralPath (Join-Path $repoRoot 'sources/exporters/BundleObjectProbe/SerializedEvidenceWriter.cs') -Destination $exporterSource -Force
     }
 }
-foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py', 'object_pipeline.py', 'source_rig_discovery.py', 'role_bundle_discovery.py', 'prop_reference_discovery.py', 'model_assembly.py', 'summarize_composite_roles.py', 'prepare_unity_adaptation.py', 'verify_object_export_files.py')) {
+foreach ($file in @('index_game_resources.py', 'endfield_manifest.py', 'index_formats.py', 'extract_plan_bundles.py', 'object_pipeline.py', 'character_model_cache.py', 'source_rig_discovery.py', 'role_bundle_discovery.py', 'prop_reference_discovery.py', 'model_assembly.py', 'summarize_composite_roles.py', 'prepare_unity_adaptation.py', 'verify_object_export_files.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $packageRoot ('scripts\' + $file)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'profiles\known_builds.json') -Destination (Join-Path $packageRoot 'profiles\known_builds.json') -Force
@@ -146,14 +146,14 @@ foreach ($file in @('Program.cs', 'WorkspaceAdaptationVerification.csproj')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\WorkspaceAdaptationVerification\' + $file)) -Destination (Join-Path $adaptationVerification $file) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'sources\verification\UnityPreviewVerification.cs') -Destination (Join-Path $packageRoot 'sources\verification\UnityPreviewVerification.cs') -Force
-foreach ($name in @('UnityMenuVerification.cs', 'UnityLaunchVerification.cs', 'UnityEdgeVerification.cs', 'UnityHoldVerification.cs', 'UnityMouseVerification.cs', 'UnityGeneratedKneeVerification.cs', 'UnityMappingVerification.cs', 'UnitySharedRigVerification.cs', 'UnityModelAssemblyVerification.cs', 'test_model_assembly.py', 'investigate_prop_references.py', 'inspect_shared_rig_catalog.py', 'inspect_candidate_dependencies.py')) {
+foreach ($name in @('UnityMenuVerification.cs', 'UnityLaunchVerification.cs', 'UnityEdgeVerification.cs', 'UnityHoldVerification.cs', 'UnityMouseVerification.cs', 'UnityGeneratedKneeVerification.cs', 'UnityMappingVerification.cs', 'UnitySharedRigVerification.cs', 'UnityModelAssemblyVerification.cs', 'UnityCharacterLibraryVerification.cs', 'test_character_model_cache.py', 'prepare_library_fixture.py', 'test_model_assembly.py', 'investigate_prop_references.py', 'inspect_shared_rig_catalog.py', 'inspect_candidate_dependencies.py')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot ('sources\verification\' + $name)) -Destination (Join-Path $packageRoot ('sources\verification\' + $name)) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\verify_preview_project.ps1') -Destination (Join-Path $packageRoot 'scripts\verify_preview_project.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\verify_edge_project.ps1') -Destination (Join-Path $packageRoot 'scripts\verify_edge_project.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\verify_remaining_project.ps1') -Destination (Join-Path $packageRoot 'scripts\verify_remaining_project.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\verify_display_scale.ps1') -Destination (Join-Path $packageRoot 'scripts\verify_display_scale.ps1') -Force
-foreach ($name in @('RemainingAcceptance', 'DesktopAcceptance', 'UnityMouseAcceptance', 'CompositeRoleVerification')) {
+foreach ($name in @('RemainingAcceptance', 'DesktopAcceptance', 'UnityMouseAcceptance', 'CompositeRoleVerification', 'CharacterLibraryVerification')) {
     $destination = Join-Path $packageRoot ('sources\verification\' + $name)
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     foreach ($file in @('Program.cs', ($name + '.csproj'))) {
@@ -176,6 +176,6 @@ $readme = [IO.File]::ReadAllText((Join-Path $repoRoot 'docs\框架说明.md'))
 $readme = [regex]::Replace($readme, '\]\((?!<|[A-Za-z][A-Za-z0-9+.-]*:|/|#)([^)\r\n]+\.md(?:#[^)\r\n]*)?)\)', '](docs/$1)')
 [IO.File]::WriteAllText((Join-Path $packageRoot 'README.md'), $readme, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $packageRoot 'scripts\package_framework.ps1') -Force
-@{ schema = 'endfield-character-framework-package-v1'; version = '0.15.0-model-assembly-evidence'; executable = 'EndfieldChenTool.exe' } |
+@{ schema = 'endfield-character-framework-package-v1'; version = '0.16.0-character-motion-library'; executable = 'EndfieldChenTool.exe' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot $markerName) -Encoding utf8
 Write-Output "框架运行目录：$packageRoot"

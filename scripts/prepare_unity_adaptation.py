@@ -53,9 +53,23 @@ def prepare_unity_package(state, selection, model, clips):
         require(digest(destination) == sha, "骨架证据复制校验失败。")
         inputs.append({"path": relative, "sha256": sha})
 
+    # A model revision is shared across tasks; clip-dependent assembly evidence stays in its motion pack.
+    model_inputs = []
     for source in sorted((run / "exports/model").rglob("*")):
         if source.is_file():
-            copy(source, "Model/" + source.relative_to(run / "exports/model").as_posix())
+            relative = "Evidence/model-assembly.json" if source.name == 'model-assembly.json' else "Model/" + source.relative_to(run / "exports/model").as_posix()
+            copy(source, relative)
+            if relative.startswith('Model/'):
+                model_inputs.append(inputs[-1])
+    from character_model_cache import fingerprint
+    library_id = fingerprint({'revision': state['result'].get('modelRevision'), 'files': model_inputs,
+        'policy': 'unity-generic-four-weights-always-animate-v2', 'inferUnits': rules.get('inferUnits', False),
+        'manualModelScale': None if rules.get('inferUnits') else float(rules['modelImportScale']),
+        'manualPositionScale': None if rules.get('inferUnits') else float(rules['positionScale'])})
+    library_root = 'Assets/EndfieldCharacterLibrary/' + library_id
+    library_target = package / library_root
+    library_target.mkdir(parents=True)
+    (target / 'Model').rename(library_target / 'Model')
     target_rig = ""
     human_mappings = ""
     if rules.get("inferUnits", False):
@@ -103,13 +117,13 @@ def prepare_unity_package(state, selection, model, clips):
             require(False, '旧对象解析结果缺少源骨架证据，请重新解析。')
         definitions.append(definition)
     config = {"schema": "endfield-unity-adaptation-config-v1", "taskId": state["result"]["taskId"],
-        "runId": state["result"]["runId"], "adapterVersion": "0.15.0", "modelKey": model["key"],
+        "runId": state["result"]["runId"], "adapterVersion": "0.16.0", "modelKey": model["key"], "libraryRoot": library_root,
         "model": "Model/" + Path(model_report["fbx"]).relative_to(run / "exports/model").as_posix(),
         "modelImportScale": rules["modelImportScale"], "targetRig": target_rig, "humanMappings": human_mappings,
         "rules": {key: rules[key] for key in ("positionScale", "dropUnmatched", "dropSceneTranslation", "forceLoop", "normalizeRoot", "excludedDescendants", "excludedNodes", "inferUnits")},
         "clips": definitions, "inputs": inputs, "preview": {"enabled": rules.get("createPreviewScene", False)}}
-    if (target / 'Model/model-assembly.json').is_file():
-        config['assembly'] = 'Model/model-assembly.json'
+    if (target / 'Evidence/model-assembly.json').is_file():
+        config['assembly'] = 'Evidence/model-assembly.json'
     write_json(target / "adaptation.json", config)
     editor = package / "Assets/EndfieldCharacterWorkbench/Editor"
     editor.mkdir(parents=True)
@@ -125,9 +139,9 @@ def prepare_unity_package(state, selection, model, clips):
         "1. 将本目录的 Assets 内容复制到现有 Unity 项目的 Assets 下。\n"
         "2. 等待 Unity 导入和编译；选择 `" + asset_root + "/adaptation.json`。\n"
         "3. 执行菜单 Endfield Character Tool → 适配所选配置并生成预览 Prefab。\n"
-        "4. 在同目录 Generated 下查看独立动画、控制器、Character.prefab 和 adaptation-result.json。\n"
-        "5. 回到工作台点击读取 Unity 适配结果。若勾选了生成预览场景，在 Generated 下打开 CharacterPreview.unity，"
-        "进入 Play 后可切换、暂停、重播、调速和逐帧查看。也可将 Prefab 放入自己的场景。\n\n"
+        "4. 本次 Generated 保存动画、控制器和 adaptation-result.json；模型、材质和角色 Prefab 在角色库中共享。\n"
+        "5. 回到工作台点击读取结果，再点“打开并播放预览”。已启用预览时，工具在同一个预览场景中汇总此模型已通过核对的动作，"
+        "进入 Play 后可切换、暂停、重播、调速和逐帧查看。重复导入不会再复制角色模型。\n\n"
         "开启自动推导时，模型倍率来自蒙皮绑定骨段对照，动画位置倍率来自主体骨骼曲线的多时刻测量，并会保存测量报告；证据不足时停止。关闭自动推导后使用明确填写的单位倍率。根据主体 Transform 曲线和实际动态肌肉通道选择 Generic 或 Humanoid；"
         "人形模式要求唯一匹配模型的源人形映射。生成完成后使用工作台“打开并播放预览”，无需再次生成。\n\n"
         "源动画保留，生成结果尚未验证播放。若有未匹配轨道，默认停止并记录；"

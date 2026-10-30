@@ -91,6 +91,9 @@ public sealed class UnityAdaptationRunner
                     FileAccess.ReadWrite, FileShare.None);
                 RequireClosedProject(run.Project);
                 Publish("copy", "正在复制经摘要核对的独立适配包。", 12);
+                var packageConfig = JsonFiles.Read<PackageConfig>(packageFiles[preparation.UnityAssetRoot + "/adaptation.json"].Path);
+                if (packageConfig.LibraryRoot.Length > 0)
+                    InstallLibrary(packageConfig.LibraryRoot, packageFiles, run.Project, work, invocation, token);
                 InstallAssets(preparation, packageFiles, assetRoot, work, invocation, token);
                 Publish("editor", "正在准备 Unity 编辑器入口。", 30);
                 if (packageFiles.TryGetValue(RuntimeRelative, out var runtimeScript))
@@ -204,7 +207,8 @@ public sealed class UnityAdaptationRunner
                 RequirePackageInstalled(preparation, packageFiles, assetRoot, token);
                 var result = await UnityAdaptationResults.ImportLockedAsync(saved, token, invocation);
                 run = run with { Status = "adapted_unverified", FinishedAt = DateTimeOffset.Now };
-                Publish("complete", "Unity 原生动画、控制器和 Prefab" + (result.UnityPreviewScene == null ? "" : "、独立预览场景") + "已生成并核对；尚未验证播放。", 100);
+                Publish("complete", (packageConfig.LibraryRoot.Length > 0 ? "共享角色与本次动画、控制器" : "Unity 原生动画、控制器和 Prefab")
+                    + (result.UnityPreviewScene == null ? "" : (packageConfig.LibraryRoot.Length > 0 ? "、共享预览入口" : "、独立预览场景")) + "已生成并核对；尚未验证播放。", 100);
                 return new(result, run);
             }
             catch (Exception error)
@@ -297,24 +301,51 @@ public sealed class UnityAdaptationRunner
             || config.RunId != result.RunId || config.Clips.Count != result.ExpectedAdaptedClips)
             throw new InvalidDataException("适配配置与当前任务不符。");
         var inputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (config.LibraryRoot.Length > 0) UnityCharacterLibrary.Root(config.LibraryRoot);
         foreach (var input in config.Inputs)
         {
-            string key = assetRoot + "/" + input.Path;
+            string key = UnityCharacterLibrary.Input(assetRoot, config.LibraryRoot, input.Path);
             if (!(input.Path.StartsWith("Model/", StringComparison.Ordinal) || input.Path.StartsWith("Sources/", StringComparison.Ordinal) || input.Path.StartsWith("Evidence/", StringComparison.Ordinal))
                 || !inputs.Add(key) || !files.TryGetValue(key, out var file) || file.Sha256 != input.Sha256)
                 throw new InvalidDataException("适配配置的输入清单与包文件不一致。");
         }
-        if (!inputs.Contains(assetRoot + "/" + config.Model)
+        if (!inputs.Contains(UnityCharacterLibrary.Input(assetRoot, config.LibraryRoot, config.Model))
             || config.Clips.Any(clip => !inputs.Contains(assetRoot + "/" + clip.Source))
             || config.Clips.Any(clip => new[] { clip.SourceRig, clip.PathEvidence }.Where(path => path.Length > 0).Any(path => !inputs.Contains(assetRoot + "/" + path)))
             || files.Keys.Any(key => key.StartsWith(assetRoot + "/", StringComparison.Ordinal) && key != configRelative && !inputs.Contains(key))
-            || files.Keys.Any(key => key != EditorRelative && key != RuntimeRelative && key != "使用说明.md" && !key.StartsWith(assetRoot + "/", StringComparison.Ordinal)))
+            || files.Keys.Any(key => key != EditorRelative && key != RuntimeRelative && key != "使用说明.md" && !key.StartsWith(assetRoot + "/", StringComparison.Ordinal) && !inputs.Contains(key)))
             throw new InvalidDataException("适配包包含未声明的内容或缺少模型／动画。");
         // Older packages lack the batch entry. Ask for a fresh package rather than altering its manifest.
-        if (config.AdapterVersion is not ("0.8.0" or "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0" or "0.15.0")) throw new InvalidDataException("适配包版本不受支持，请重新生成。");
-        if (config.AdapterVersion is ("0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0" or "0.15.0") && !files.ContainsKey(RuntimeRelative))
+        if (config.AdapterVersion is not ("0.8.0" or "0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0" or "0.15.0" or "0.16.0")) throw new InvalidDataException("适配包版本不受支持，请重新生成。");
+        if (config.AdapterVersion == "0.16.0" && config.LibraryRoot.Length == 0) throw new InvalidDataException("新动画包缺少角色库引用。");
+        if (config.AdapterVersion is ("0.9.0" or "0.10.0" or "0.11.1" or "0.12.0" or "0.13.0" or "0.15.0" or "0.16.0") && !files.ContainsKey(RuntimeRelative))
             throw new InvalidDataException("适配包缺少预览播放脚本，请重新生成完整包。");
         return files;
+    }
+
+    private static void InstallLibrary(string root, Dictionary<string, ObjectOutputFile> files, string project, string work, string invocation, CancellationToken token)
+    {
+        UnityCharacterLibrary.Root(root);
+        string destination = UnityProjectFiles.Within(project, root);
+        var sources = files.Where(pair => pair.Key.StartsWith(root + "/Model/", StringComparison.Ordinal)).ToArray();
+        if (sources.Length == 0) throw new InvalidDataException("角色库模型文件清单为空。");
+        if (!Directory.Exists(destination))
+        {
+            string stage = UnityProjectFiles.Within(work, "staging/model-" + invocation);
+            Directory.CreateDirectory(stage);
+            foreach (var entry in sources)
+                UnityProjectFiles.Copy(entry.Value.Path, UnityProjectFiles.Within(stage, entry.Key[(root.Length + 1)..]), entry.Value, token);
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            Directory.Move(stage, destination);
+        }
+        foreach (var entry in sources) UnityProjectFiles.Verify(UnityProjectFiles.Within(project, entry.Key), entry.Value, token);
+        var expected = sources.Select(row => Path.GetFullPath(UnityProjectFiles.Within(project, row.Key))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in Directory.EnumerateFiles(Path.Combine(destination, "Model"), "*", SearchOption.AllDirectories))
+        {
+            UnityProjectFiles.NoLinks(path);
+            if (!path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase) && !expected.Contains(Path.GetFullPath(path)))
+                throw new InvalidDataException("角色库模型目录有额外文件，已停止以保留编辑。");
+        }
     }
 
     private static void InstallAssets(ObjectOperationResult result, Dictionary<string, ObjectOutputFile> files,
@@ -427,6 +458,7 @@ public sealed class UnityAdaptationRunner
         public string RunId { get; init; } = "";
         public string AdapterVersion { get; init; } = "";
         public string Model { get; init; } = "";
+        public string LibraryRoot { get; init; } = "";
         public List<PackageInput> Inputs { get; init; } = [];
         public List<PackageClip> Clips { get; init; } = [];
     }

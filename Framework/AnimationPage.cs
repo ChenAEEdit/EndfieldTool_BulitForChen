@@ -108,8 +108,9 @@ internal sealed partial class WorkspaceForm
         if (inventoryTask == null) throw new InvalidDataException("请先载入任务。");
         var saved = UnityTaskTarget.Resolve(inventoryTask);
         var result = UnityAdaptationResults.ValidatePreparation(saved);
-        string scene = UnityProjectFiles.Within(saved.Plan.Options.UnityProject, result.UnityAssetRoot + "/Generated/CharacterPreview.unity");
-        if (!result.Adapted || !File.Exists(scene)) throw new InvalidDataException("当前目标项目尚无完整预览，请先生成并核对结果。");
+        if (!result.Adapted || result.UnityPreviewScene == null) throw new InvalidDataException("当前目标项目尚无完整预览，请先生成并核对结果。");
+        string scene = UnityProjectFiles.Within(saved.Plan.Options.UnityProject, Path.GetRelativePath(saved.Plan.Options.UnityProject, result.UnityPreviewScene));
+        if (!File.Exists(scene)) throw new InvalidDataException("共享预览场景会在首次点击“打开并播放预览”时创建。");
         var info = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
         info.ArgumentList.Add("/select," + scene); Process.Start(info);
         adaptationDetails.AppendText("\r\n在 Unity 的 Project 窗口打开该场景，点击 Play：\r\n" + scene + "\r\n");

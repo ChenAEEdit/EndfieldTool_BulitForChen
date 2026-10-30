@@ -11,6 +11,8 @@ public sealed class CharacterPreviewControls : MonoBehaviour
     public static event Action<string, Rect> GuiControlRendered;
 #endif
     public Animator animator;
+    public string characterLibraryRoot = "";
+    public string[] motionKeys = new string[0];
     public Camera previewCamera;
     public AnimationClip[] clips = new AnimationClip[0];
     public string[] statePaths = new string[0];

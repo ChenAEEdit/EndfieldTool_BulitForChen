@@ -359,7 +359,7 @@ internal sealed partial class WorkspaceForm
     private static string DescribeObjectResult(ObjectOperationResult? result) => result == null ? "\r\n尚无对象解析或导出记录。\r\n" :
         $"\r\n对象操作：{ObjectStatus(result.Status)} · {result.Message}\r\n来源 Bundle 运行：{result.BundleRunId}\r\n输出文件：{result.Files.Count}；已适配：{result.Adapted}；已验证播放：{result.PlaybackVerified}\r\n"
         + string.Join("\r\n", result.Files.Take(40).Select(row => $"  [{row.Kind}] {row.Path}"))
-        + (result.UnityPreviewScene == null ? "" : "\r\n独立预览场景：" + result.UnityPreviewScene + "\r\n")
+        + (result.UnityPreviewScene == null ? "" : "\r\n预览场景：" + result.UnityPreviewScene + "\r\n")
         + "\r\n" + string.Join("\r\n", result.Warnings.Select(message => "提示：" + message))
         + "\r\n" + string.Join("\r\n", result.Failures.Select(message => "失败：" + message)) + "\r\n";
 

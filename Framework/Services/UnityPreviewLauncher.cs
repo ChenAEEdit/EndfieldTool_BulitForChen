@@ -94,7 +94,7 @@ public sealed class UnityPreviewLauncher
                 if (receipt?.RequestId == id)
                 {
                     JsonFiles.Write(Path.Combine(record, "receipt.json"), receipt);
-                    string expectedScene = result.UnityAssetRoot + "/Generated/CharacterPreview.unity";
+                    string expectedScene = Path.GetRelativePath(project, result.UnityPreviewScene!).Replace('\\', '/');
                     if (receipt.Schema != "endfield-preview-open-result-v1" || receipt.Status != "opened"
                         || !receipt.PlayRequested || receipt.Scene != expectedScene)
                         throw new InvalidDataException(receipt.Error ?? "Unity 未确认打开本次预览。");
